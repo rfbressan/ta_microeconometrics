@@ -1,0 +1,263 @@
+---
+title: "Introduction to `data.table` R package"
+author: "Rafael Felipe Bressan"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Before we start the econometrics part of this course, I'll introduce the   [`data.table`](https://rdatatable.gitlab.io/data.table/index.html) R package which I strongly suggest you to learn. The `data.table` package provides a **high-performance** version of base R’s data.frame. It's much **faster** and **memory-efficient**, being ideal to use with large and complex datasets (i.e. the kind you will probably deal with during your thesis).
+
+This class is based on the [introduction](https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.html) vignette of `data.table` which is more detailed and should be consulted.
+
+# Installation
+
+Install and load the package in order to use it.
+
+```{r inst}
+# install.packages("data.table")
+library(data.table)
+```
+
+# Reading csv files
+
+We use the package's function `fread` to load datasets saved in text formatted files. The most important arguments are: sep, nrows and encoding. You can always type in the console `> ?fread` and check the function's help page.  
+
+```{r read}
+dt <- fread("Data/escolas.csv",
+            sep = ",",
+            nrows = Inf,
+            encoding = "UTF-8")
+dt
+```
+
+Now `dt` is a `data.table` which also inherits methods from base R's data.frame.
+
+# Data Manipulation
+
+The general form of `data.table` syntax is **DT[i, j, by]** where we can read it as: Take DT, subset/reorder rows using `i,` then calculate columns `j`, grouped by `by`.
+
+## Subsetting rows in `i`
+
+We can select only a handful of DT's rows according to some criteria. Let's choose only the observations of girls of age 10 or more. Notice we do not need to quote column's name inside `data.table`'s brackets when selecting them in either `i` or `j`.
+
+```{r row-subset}
+dt[mulher == 1 & idade > 10]
+```
+
+You can also select the n-first rows with a numeric index. The resulting `data.table` can then be **chained** to perform other operations, for example, reordering.
+
+```{r reorder}
+dt[1:5][order(idade)]
+```
+
+## Selecting columns in `j`
+
+If you are not interested in filtering out rows then you should skip `i` by leaving it blank. Otherwise, subsetting rows and selecting columns can coexist as expected. Here we select only the `escola` and `aluno` columns.
+
+```{r col-select}
+dt[, .(escola, aluno)]
+```
+
+Whenever `j` returns a list, each element of the list will be converted to a column in the resulting `data.table`. The `.()` is just an alias for `list()`, therefore, in the example above we are computing a list with 2 elements, escola and aluno in `j` and the final result is a `data.table` containing those two columns only.
+
+Suppose we want to select columns **programmatically**. We do not know beforehand the name of the columns we are interested in, but only a pattern their names follow. Let's select all columns ended in _ade_ (i.e. in our case we will select only _idade_).
+
+```{r col-prog}
+cols <- grep("ade$", colnames(dt), value = TRUE)
+dt[, ..cols]
+```
+
+## Computing over columns
+
+The greatest advantage of storing your data in a [tidy](https://tidyr.tidyverse.org/articles/tidy-data.html) way is that it is easier to compute new variables from pre-existent ones. In a tidy data structure each column represents a variable and each row is an observation (i.e. imagine a cross-section) such that new variables are created just by making new columns in the data structure. Suppose we want to compute the product of the logical exam score with the age and return this product for each observation, just do that in `j`.
+
+```{r comp}
+dt[, logico*idade][1:5]
+```
+
+What is happening here? Notice that `j` is **not** returning a list, but instead a product of two vectors, which is a vector in R. Therefore, our result is not a `data.table` but a vector (i.e. a unidimensional array). We can return a `data.table` just by enclosing the expression with `.()`. Moreover, we can also name this column.
+
+```{r comp2}
+dt[, .(product = logico*idade)]
+```
+
+Don't mind just yet that we are not returning all other columns in the original `data.table`. When showing the reference semantics of `data.table` we will do that.
+
+# Aggregations
+
+Aggregations are operations in a vector that results in a single value. Some of the most common aggregations are: sum, mean, min (or max) and first (or last). We can perform those operations on the whole dataset or on subsamples of it defined by the argument `by`. When using `by` we are actually computing the aggregations **by group**, each group according to the chosen variable. This framework is also known as [**split-apply-combine**](https://cran.r-project.org/web/packages/data.table/vignettes/datatable-sd-usage.html) since we split the data by groups, apply a function (typically an aggregation) to each of these groups and recombine the results back into one data structure.
+
+First let's introduce the special symbol `.N` that holds the number of observations in the current group. It is used to calculate the number of observations in a subsample. How many boys and girls are there in the dataset?
+
+```{r N}
+dt[, .N, by = .(mulher)]
+```
+
+When there is only one expression in `j`, the use of `.N` will return a `data.table`. If you have more than one column being computed in `j`, then you should enclose them in a list. Also, `by` accepts either a list of unquoted column names or **a character vector** of columns names (ideal to use when grouping programmatically). If there is only one group, then a bare name is acceptable as convenience.
+
+## Different aggregations to different columns
+
+Now let's do some aggregations. What are the number of children and their average score by each school? Return a `data.table` with columns named `obs` and `avg`.
+
+```{r agg}
+dt[, .(obs = .N, avg = mean(logico)), by = escola][1:5]
+```
+
+## Same aggregation to different columns
+
+Now suppose we want to calculate the average exam score AND student's age by school. We can certainly compute these two columns individually, using the same function, `mean`, twice. But we can also use the special symbol `.SD` which stands for Subset of Data. `.SD` is itself a `data.table` that holds the data for the current `by` group and columns from .SDcols. We can check what we mean by ".SD being a `data.table` split by groups with selected columns from `.SDcols`".
+
+```{r SD-SDcols}
+dt[, print(.SD), by = mulher, .SDcols = c("logico", "idade")]
+```
+
+We have printed two data.tables, one with 429 rows (girls) and the other with 477. Each `data.table` contains only the selected columns by `.SDcols`, `logico` and `idade`. The grouping variable `mulher` is NOT part of `.SD`. To compute on multiple columns, we can then simply use the base R function lapply(). This function will take as the first argument the `.SD` `data.table` and compute the function FUN (the second argument) on each column, returning a _list_ of computed values. Answering our question, what's the average exam score and age by school?
+
+```{r averages}
+dt[, lapply(.SD, mean), by = escola, 
+            .SDcols = c("logico", "idade")][1:5]
+```
+
+
+## Same aggregation for some columns only
+
+Now suppose you want to know the mean of both exam score and age by school, but also the minimum and maximum ages also by school. You can combine the previous two sections and remember, `j` must return a list in order for the result to be a `data.table`.
+
+```{r combine-agg}
+dt[, c(lapply(.SD, mean), min = min(idade), max = max(idade)), by = escola,
+   .SDcols = c("logico", "idade")][1:5]
+```
+
+## Multiple aggregations to the same columns
+
+If your objective is to do multiple aggregations to the same column(s) the use of the `sapply` function is very flexible in a way you can define your own **custom function** to apply on `.SD` columns. That way you can define a summary statistics function that returns the number of observations, the mean and standard deviation of selected columns for example. Let's do that and compute descriptive statistics, grouped by school, on the student's age and exam.
+
+```{r custom1}
+dt[, by = escola,
+   sapply(.SD, function(x){
+     list(.N, mean(x), sd(x))
+   }),
+   .SDcols = c("idade", "logico")][1:5]
+```
+
+Here, the `sapply` function returns a matrix where the rows contain the functions' results and the columns are the variables you passed on `.SDcols`, for each group. `data.table` will justapose all the results for each column in order and then return. Mind that the custom function _must_ return a list. The columns of the resulting `data.table` will have default names and you can always use `setnames` to rename them. Also notice that **`j` and `by` can be interchanged** inside the brackets. This is useful when `j` is a long expression and you want to write it in several lines of code.
+
+We could also have done the following:
+
+```{r custom2}
+dt[, by = escola,
+   c(.N,
+     lapply(.SD, mean),
+     lapply(.SD, sd)),
+   .SDcols = c("idade", "logico")][1:5]
+```
+
+combinning results for each aggregation. Beware of the column's order and repeated names. This is ok for a handful of operations but can become quite repetitive if you have many more aggregations to perform, and you will have to rename (and possibly reorder) your columns anyway.
+
+
+Whenever you perform calculations in a `data.table` where _the reference semantics is not used_ you should **attribute** your results to another local variable. For example, up until now, all our operations did not changed the contents of `dt`! If you want to further work down an intermediary result like the last one you should save this to another `data.table` variable with the `<-` operator.
+
+Saving an intermediary results is specially useful (and needed actually) when doing grouped computations that change the number of rows. The reference operator `:=` cannot save a `data.table` with a smaller number of rows, therefore you need to save this result by yourself. So, keep in mind, **whenever your computation is not using the reference operator `:=`, you should attribute your results to a local variable**.
+
+```{r attribute}
+averages <- dt[, lapply(.SD, mean), by = escola, 
+            .SDcols = c("logico", "idade")][1:5]
+averages
+```
+
+# Reference Semantics
+
+Reference semantics allows to add/update/delete **columns** by reference. Performing operations by reference is much faster than copying data to another position in memory and only than modifying it, which is the default in base R and `dplyr`. Besides the speed, operations by reference, since they do not copy memory contents, uses very little of RAM and it is ideal when your are running out of memory when dealing with your dataset.
+
+To add/update/delete columns of a `data.table` you should use the **`:=`** operator. Besides the speed and memory considerations before mentioned, operations by reference are done _in-place_, thus, you don't need to save the results in another local variable (even if it takes the same name), the same `data.table` will be updated and you don't need to keep up inventing new names for your variables. 
+
+## Adding columns by reference
+
+The simplest use case of an operation by reference is to create a single new column from other ones. Let's creat an `id` column which is the concatenation of school and student's numbers. 
+
+```{r mean}
+dt[, id := paste(escola, aluno, sep = "_")]
+dt[1:5]
+```
+
+Note that we do not need to quote the new column's name _id_ when only one column is being created/updated. When more than one column will be attributed, the **functional form** of the `:=` is preferable.
+
+```{r two-cols}
+dt[, id := NULL] # removing the id column
+
+dt[, `:=`(
+   id = paste(escola, aluno, sep = "_"),
+   product = logico*idade
+)]
+dt[1:5]
+```
+
+## Deleting columns
+
+You could also pass a character vector of column names to the LHS of `:=`, while the RHS will always hold a list of values. This way you can programmatically create new columns.
+
+```{r col-names}
+dt[, c("id", "product") := NULL]
+```
+
+In the example above we have attributed the NULL value to the columns `id` and `product` and this is the way to **remove columns** from a `data.table`.
+
+## Sub-assign by reference
+
+A reader paying close attention to the examples above must have identified some observations without a schoold number assigned. Those observations have the value "S/escola" and that's why `escola` is of type character. Now we want to fix that. Let's attribute the value 99, by reference, **only to the rows** where `escola == "S/escola"`. In other words, let's update column `escola` for selected observations only. After that we can also change the column class to `integer` by chaining the operations
+
+```{r escola}
+dt[escola == "S/escola", escola := "99"][, escola := as.integer(escola)]
+dt[, lapply(.SD, class)]
+```
+
+Notice that inside the second pair of brackets we did not filtered any rows (`i` is empty), this means that `j` will be applied to all observations.
+
+## Grouped operations
+
+You can also perform grouped operations by reference using the `by` argument as before. This can be quite useful in data anlysis and econometrics in particular. Suppose we want to demean age and exam score, by school. That is, for each observation we want to subtract the group mean given by school and save this result in columns named `idade_demean` and `logico_demean`.
+
+```{r demean}
+dt[, by = escola,
+   `:=`(
+      idade_demean = idade - mean(idade),
+      logico_demean = logico - mean(logico, na.rm = TRUE)
+)]
+dt[1:5]
+```
+
+Another way to accomplish the same result.
+
+```{r demean2}
+dt[, c("idade_demean", "logico_demean") := NULL] # Remove columns
+
+cols <- c("idade", "logico")
+new_cols <- paste(cols, "demean", sep = "_")
+dt[, by = escola,
+   (new_cols) := lapply(.SD, function(x) x - mean(x, na.rm = TRUE)),
+   .SDcols = cols]
+dt[1:5]
+```
+
+
+# Programming with `data.table`
+
+
+
+# Useful Links
+
+[data.table home page](https://rdatatable.gitlab.io/data.table/index.html)
+
+[Benchmarks](https://h2oai.github.io/db-benchmark/)
+
+[Advanced tips and tricks with data.table](http://brooksandrew.github.io/simpleblog/articles/advanced-data-table/)
+
+[A data.table and dplyr tour](https://atrebas.github.io/post/2019-03-03-datatable-dplyr/)
+
+[Stackoverflow](https://stackoverflow.com/questions/tagged/data.table)
