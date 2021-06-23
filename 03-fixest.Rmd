@@ -1,0 +1,196 @@
+---
+title: "Regressions with `fixest` R package"
+author: "Rafael Felipe Bressan"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+bibliography: "references.bib"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The package `fixest` provides a family of functions to perform estimations with multiple fixed-effects, instrumental variables and provides clustered standard errors without the need to use a third-party package. The two main functions are feols for linear models and feglm for generalized linear models.
+
+# Installation and dataset ingestion
+
+Install and load the package in order to use it.
+
+```{r inst, message=FALSE}
+# install.packages("fixest")
+library(data.table)
+library(fixest)
+```
+
+We will use for this class a dataset containing a sample of 12,834 individuals in the labor force extracted from the 2019 annual supplement of the 2019 US Current Population Survey.
+
+```{r read}
+dt <- fread("Data/cps_union_data.csv")
+```
+
+# Cleaning
+
+Before doing any analysis or regressions we must first check what kind of data we have been provided and make the appropriate pre-processing in order to have a "ready to regress" dataset. Usually, one would drop any columns that: i) have no variation among observations, ii) have too many missing values. Observations that **eventually** have a missing value for some variable should be treated case-by-case. Can you impute those values? Is that variable relevant for this regression? Should be allowed only complete cases in the dataset?
+
+```{r summary}
+summary(dt)
+```
+
+Taking a look at the summary table above you can readly see that `public_housing` has `r sum(is.na(dt$public_housing))` NA's and we should drop it. Moreover, `employed` is useless for regression since it has no variation at all, drop it. Some other NA values are found in `veteran` and `earnings` but they are not numerous. In this case you must have in mind what kind of regression you are running. Suppose your goal is to estimate the causal effect of union membership/coverage (variable `union`) on weekly earnings (variable `earnings`). Obviously, you should drop any observations where `earnings` is missing. Also, there are two columns that according to the provided dictionary (`dictionary.xlsx`) are categorical: `class_of_worker`, `class_of_worker_last_year` (the name class should've hinted you) and both `marital_status` and `race` which you may want to recode to be binary. Let's do all of that.
+
+```{r clean}
+dt <- dt[!is.na(earnings)] # Keep only not NA in earnings
+dt[, c("V1", "CPSID", "CPSIDP", "public_housing", "employed") := NULL] # drop whole columns
+dt[, `:=`(
+  marital_status = ifelse(marital_status %in% c(1, 2), 1, 0),
+  race = ifelse(race == 1, 1, 0),
+  age_2 = age^2
+)]
+cat_cols <- c("class_of_worker", "class_of_worker_last_year")
+dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
+```
+
+# Linear Regressions
+
+## Simple regression
+
+Now we are ready to perform a simple regression of `earnings` on `union` (a binary variable) and interpret it. Is this a causal regression? Why?
+
+```{r simple}
+simple_reg <- feols(earnings~union, data = dt)
+
+etable(simple_reg, cluster = ~class_of_worker_last_year)
+```
+
+## Multiple regression
+
+Now let's add some control variables to our regression. The Mincerian equation stipulate that `age`, age squared, `education` and `female` should play a role in determining `earnings`, let's also add `race`, `marital_status` and `class_of_worker`.
+
+```{r multiple}
+mult_reg <- feols(
+  earnings~union+age+age_2+education+female+race+marital_status+class_of_worker,
+  data = dt
+)
+
+etable(mult_reg, cluster = ~class_of_worker_last_year, drop = "class_of_worker")
+```
+
+## Multiple estimations
+
+The `fixest` package allows for multiple estimations (i.e. changing the dependent variable) at once. Suppose you want to regress not only `earnings` on `union` but also `wage_income_last_year` and `total_income_last_year`. You can do that in just one call to `feols` function.
+
+```{r mult-est}
+setnames(dt, c("wage_income_last_year", "total_income_last_year"),
+         c("wage", "total"))
+mult_est <- feols(c(earnings, wage, total)~union, data = dt)
+etable(mult_est, se = "hetero")
+```
+
+## Step-wise estimations
+
+You can also incrementally increase the complexity of your model by introducing new regressors. To estimate multiple RHS, you need to use a specific set of functions, the **stepwise functions**. There are four of them: sw, sw0, csw, csw0.
+
+- sw: this function is _replaced_ sequentially by each of its arguments,
+- sw0: starts with the empty element,
+- csw: it stands for _cumulative_ stepwise. It _adds_ to the formula each of its arguments sequentially,
+- csw0: cumulative, but starting with the empty element.
+
+```{r step-wise}
+step_wise <- feols(earnings~union+csw0(age, age_2),
+                   data = dt)
+etable(step_wise)
+```
+
+More details are provided in `fixest`'s vignette on [multiple estimations](https://lrberge.github.io/fixest/articles/multiple_estimations.html).
+
+# Instrumental Variables
+
+As we all know, if we were interested in the causal effect of education attainment on earnings, we would not be able to run a multiple regression like above and interpret it as causal, **education is endogenous** with relation to earnings. Thus, we may resort to instrumental variable - IV - estimation to overcome this pitfall. Suppose, _just for the sake of this example_, that `veteran` status is a potential instrument to `education`. How can you estimate a two-stage least squares regression with `fixest`?
+
+First notice that `veteran` still have NA values in it. Now you have to decide wether to impute values on it or just drop those observations. Let's proceed dropping the NA values.
+
+```{r iv}
+dt2 <- dt[!is.na(veteran)]
+iv_reg <- feols(earnings~union+age+age_2+female+race+marital_status+class_of_worker|education~veteran,
+  data = dt2)
+etable(iv_reg, keep = c("education", "union"), fitstat = ~.+ivf+ivf.p+wh+wh.p)
+```
+
+So, what have we done here? First notice how the **endogenous variable does not appear on the RHS** of the formula, it goes into a formula of its own after the vertical `|` bar delimiter. The formula for endogenous variables and its instruments takes the form: _endogenous ~ instrument_. 
+
+On the table presented above we opt to show only two coefficents by using the argument keep, `education`, our instrumented variable and `union`. Whenever using an IV approach to estimate something, it's useful to perform tests of **weak instrument** and **exclusion restriction**. Here we are showing the first-stage F-test to assess instrument weakness and the Wu-Hausman endogeneity test where H0 is the absence of endogeneity of the instrumented variables. No wonder `veteran` status is a weak instrument, its correlation to education is very small at `r dt2[, cor(education, veteran)]`.
+
+# Fixed-effects
+
+Let's change the dataset, enough of earnings! Who wants to make money after all ... In **International Trade** we have what is called gravity models in which we are interested in finding out the negative effect of geographic distance on trade flows. Gravity models typically include many fixed effects to account for product, period, exporter country and importer country. A very simple gravity equation would take the form:
+
+$$
+\log(trade_{nipt})=\beta \log(\text{distance}_{ni})+\gamma_n+\gamma_i+\gamma_p+\gamma_t+\varepsilon_{nipt}
+$$
+where we have the indexes $\{n, i, p, t\}$ respectively for the importer, exporter, product and period. 
+
+```{r trade}
+data("trade")
+trade <- as.data.table(trade)
+head(trade)
+```
+
+```{r fe}
+gravity <- feols(
+  log(Euros) ~ log(dist_km) | Destination + Origin + Product + Year, 
+  data = trade)
+etable(gravity, cluster = ~Origin + Product)
+```
+
+Like the IV approach, we provide the fixed effects in a formula of its own, after the vertical bar. But notice one very important distinction, **the formula for fixed-effects is one sided**, that is, only the fixed-effects, put together by `+` signs, are included. Also, you are able to cluster your standard-errors by more than one variable.
+
+## Difference-in-Differences
+
+The `trade` dataset is a panel of several european countries stacked along the years, from 2007 to 1016. **Just for demonstration purposes** let's assume the following scenario: countries DE, FR and GB implement a reduction in tariffs, starting in 2010. With the given assumptions, it is possible to estimate the effect of such a measure on trade flows by DID. We have three countries in the treatment group and the treatment happens from 2010 onwards. Let's create two dummy variables for group and period and then estimate our DID model[^did].
+
+[^did]: Remember, this is just for demonstration purposes. The following exercise is not historically accurate nor should make economic sense. Moreover, I have no clue whether we will find any statistical significance and if so, this is just a data artifact and should not be interpreted in any way.
+
+```{r did}
+trade[, `:=`(
+  d_g = ifelse(Destination %in% c("DE", "FR", "GB"), 1, 0),
+  d_t = ifelse(Year >= 2010, 1, 0)
+)]
+trade[, d_treat := d_g*d_t]
+did <- feols(log(Euros) ~ d_treat+log(dist_km)| Destination + Year,
+             data = trade)
+etable(did, cluster = ~Origin + Product)
+```
+
+A DID specification can be interpreted and run as a canonical two-way fixed effects (TWFE). You can add control variables, like `log(dist_km)` either to make the unconfoundedness assumption more plausible or to improve the precision of your estimator.
+
+## Event Studies
+
+What if we want to run the entire "event-study" where we estimate the treatment effect for the whole period at hand, even before the actual treatment takes place (placebo-like regression)? In a regression context, TWFE essentially amounts to an interaction between our treatment group dummy and Year variables. This is easily done using the `i(fact_var, num_var, reference)` syntax:
+
+```{r es}
+es <- feols(log(Euros)~log(dist_km) + i(Year, d_g, "2009")|Destination + Year,
+            data = trade)
+etable(es, cluster = ~Origin + Product)
+```
+
+Here we set the last year before treatment takes place, 2009, as the reference, thus, its coefficient is set to zero and is not reported. Before that year we have placebo regressions, where one should not expect any effect. The coefficients post-reference are treatment effect estimations for each of those years, and the event-study may uncover dynamic effects[^es].
+
+[^es]: There is a growing literature showing that the assumptions under this kind of regression is much stronger than the canonical DID (2x2), therefore, those event-study like estimations may be severely biased. See @callaway2020difference, @de2020two, @goodman2021difference, @sun2020estimating.
+
+The `Year` variable is taken as a factor (i.e. categorical) and interacted with the treatment group dummy, then the coefficient associated with that interaction is interpreted as the differential of the dependent variable between the treatment and control group on that specific year.
+
+You can visualise the results with the command `iplot` to see only the interacted coefficients and their confidence intervals.
+
+```{r es-viz}
+iplot(es, cluster = ~Origin + Product)
+```
+
+# Useful Links
+
+[fixest Walkthrough](https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html)
+
+[fixest Homepage](https://lrberge.github.io/fixest/)
+
+# References

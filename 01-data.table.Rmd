@@ -161,11 +161,11 @@ dt[, by = escola,
 combinning results for each aggregation. Beware of the column's order and repeated names. This is ok for a handful of operations but can become quite repetitive if you have many more aggregations to perform, and you will have to rename (and possibly reorder) your columns anyway.
 
 
-Whenever you perform calculations in a `data.table` where _the reference semantics is not used_ you should **attribute** your results to another local variable. For example, up until now, all our operations did not changed the contents of `dt`! If you want to further work down an intermediary result like the last one you should save this to another `data.table` variable with the `<-` operator.
+Whenever you perform calculations in a `data.table` where _the reference semantics is not used_ you should **assign** your results to another local variable. For example, up until now, all our operations did not changed the contents of `dt`! If you want to further work down an intermediary result like the last one you should save this to another `data.table` variable with the `<-` operator.
 
-Saving an intermediary results is specially useful (and needed actually) when doing grouped computations that change the number of rows. The reference operator `:=` cannot save a `data.table` with a smaller number of rows, therefore you need to save this result by yourself. So, keep in mind, **whenever your computation is not using the reference operator `:=`, you should attribute your results to a local variable**.
+Saving an intermediary results is specially useful (and needed actually) when doing grouped computations that change the number of rows. The reference operator `:=` cannot save a `data.table` with a smaller number of rows, therefore you need to save this result by yourself. So, keep in mind, **whenever your computation is not using the reference operator `:=`, you should assign your results to a local variable**.
 
-```{r attribute}
+```{r assign}
 averages <- dt[, lapply(.SD, mean), by = escola, 
             .SDcols = c("logico", "idade")][1:5]
 averages
@@ -186,7 +186,7 @@ dt[, id := paste(escola, aluno, sep = "_")]
 dt[1:5]
 ```
 
-Note that we do not need to quote the new column's name _id_ when only one column is being created/updated. When more than one column will be attributed, the **functional form** of the `:=` is preferable.
+Note that we do not need to quote the new column's name _id_ when only one column is being created/updated. When more than one column will be assigned, the **functional form** of the `:=` is preferable.
 
 ```{r two-cols}
 dt[, id := NULL] # removing the id column
@@ -206,11 +206,11 @@ You could also pass a character vector of column names to the LHS of `:=`, while
 dt[, c("id", "product") := NULL]
 ```
 
-In the example above we have attributed the NULL value to the columns `id` and `product` and this is the way to **remove columns** from a `data.table`.
+In the example above we have assigned the NULL value to the columns `id` and `product` and this is the way to **remove columns** from a `data.table`.
 
 ## Sub-assign by reference
 
-A reader paying close attention to the examples above must have identified some observations without a schoold number assigned. Those observations have the value "S/escola" and that's why `escola` is of type character. Now we want to fix that. Let's attribute the value 99, by reference, **only to the rows** where `escola == "S/escola"`. In other words, let's update column `escola` for selected observations only. After that we can also change the column class to `integer` by chaining the operations
+A reader paying close attention to the examples above must have identified some observations without a schoold number assigned. Those observations have the value "S/escola" and that's why `escola` is of type character. Now we want to fix that. Let's assign the value 99, by reference, **only to the rows** where `escola == "S/escola"`. In other words, let's update column `escola` for selected observations only. After that we can also change the column class to `integer` by chaining the operations
 
 ```{r escola}
 dt[escola == "S/escola", escola := "99"][, escola := as.integer(escola)]
