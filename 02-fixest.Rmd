@@ -187,10 +187,14 @@ You can visualise the results with the command `iplot` to see only the interacte
 iplot(es, cluster = ~Origin + Product)
 ```
 
+# Tidying up multiple regressions
+
 # Useful Links
 
 [fixest Walkthrough](https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html)
 
 [fixest Homepage](https://lrberge.github.io/fixest/)
+
+[List-columns in data.table](https://www.rstudio.com/resources/rstudioconf-2020/list-columns-in-data-table-reducing-the-cognitive-computational-burden-of-complex-data/)
 
 # References

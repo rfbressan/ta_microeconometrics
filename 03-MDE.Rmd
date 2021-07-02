@@ -1,0 +1,193 @@
+---
+title: "Minimum Detectable Effect"
+author: "Rafael Felipe Bressan"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The minimum detectable effect - MDE - in an experiment design is related to the power of that design, that is, the probability that, for a given effect size and statistical significance level, you will be able to reject the null hypothesis of zero effect. Everything else constant, higher sample sizes improve power, thus, reducing the MDE.
+
+Before conducting the experiment itself, you can use survey data to assess the design's power. In this class we will consider a setting where we have baseline student-level data on a sample of several schools and would like to randomize a treatment at the school level. We will also analyse the impact of including student-level covariates in power. Since treatment is assigned at the school-level, standard errors should account for clustering. We start by loading our known `escolas.csv` dataset.
+
+```{r libs, message=FALSE, warning=FALSE}
+library(data.table)
+library(fixest)
+library(ggplot2)
+
+setDTthreads(100) # data.table uses all cpu cores
+setFixest_nthreads(4) # fixest uses all cpu cores
+```
+
+```{r read}
+dt <- fread("Data/escolas.csv")[, -c("V1")]
+summary(dt)
+```
+
+# Basic Principles
+
+Consider a simple regression framework with binary treatment $T\in\{0, 1\}$ and a proportion $P$ of treated individuals. We are interested in the OLS coefficient $\beta$
+
+$$
+\begin{equation}
+Y_i=\alpha+\beta T_i + \varepsilon_i.
+\end{equation}
+$$
+
+Consider that each individual was randomly sampled from an identical
+population, so that observations can be assumed to be i.i.d., with variance $\sigma^2$. The variance of $\hat\beta$ is given by
+
+$$
+\begin{equation}
+\sigma^2_{\beta}=\frac{1}{P(1-P)}\frac{\sigma^2}{N}.
+\end{equation}
+$$
+Hence, a higher sample size $N$ and a balanced proportion of treated units $(P\sim 0.5)$ will improve the precision of our estimation leading to a lower MDE. If we are interested in testing the hypothesis, $H_0$, that the effect of the program is equal to zero against the alternative that it is not, then, for a given significance level, $\alpha$ and power, $\kappa$, the MDE is given by
+
+$$
+\begin{equation}
+MDE=\left(t_{1-\kappa}+t_{\alpha/2}\right)\sqrt{\frac{1}{P(1-P)}\frac{\sigma^2}{N}}
+\end{equation}
+$$
+
+There is a trade-off between power and significance level. For some desirable MDE, if you want to have more power on your design you must accept a higher probability of committing Type I error.
+
+# Fully Randomized Experiment
+
+Let's first consider the case of a fully (i.e. individual level) randomized experiment with homogeneous treatment effect. Moreover, we will start with a simple regression and incrementally add regressors (i.e. control variables) to assess the effect on MDE. Our dependent variable is the logical exam's score and additional regressors will be age and woman's flag. The econometric specification takes the form:
+
+$$
+\begin{equation}
+y_i=\alpha+\beta T_i+\gamma_1 age_i+\gamma_2 woman_i+\varepsilon_i
+\end{equation}
+$$
+
+```{r clean}
+# Clean up the data. Never forget it!!
+dt[escola == "S/escola", escola := "99"][, escola := as.integer(escola)]
+dt <- dt[!is.na(logico)]
+summary(dt)
+```
+
+```{r rand, warning=FALSE, cache=TRUE}
+#' Include the effect in y variable for those observations in the treatment
+#' group
+set.seed(123456)
+eff_grid <- seq(0, 0.5, by = 0.05)
+reps <- 1000
+alpha <- 0.05
+dt2 <- copy(dt)
+#' Creates a data.table to hold all replications and effects
+mde_dt <- CJ(effect = eff_grid, replication = seq_len(reps))
+mde_dt[, rejections := lapply(effect, function(x){
+  dt2[, treat := rbinom(.N, 1, prob = 0.5)]
+  dt2[, y := logico + x*treat]
+  model <- feols(y~treat+csw0(idade, mulher), data = dt2, 
+               se = "hetero", 
+               lean = TRUE)
+  lapply(model, function(x) pvalue(x)["treat"] < alpha)
+})]
+mde_dt[, by = .(effect, replication), 
+       c("Model1","Model2","Model3") := rejections[[1]]]
+# Power table. Columns "Model" present the power for a given effect size
+table <- mde_dt[, by = effect,
+                lapply(.SD, mean),
+                .SDcols = patterns("Model")]
+table
+```
+
+Notice how power increases when we add regressors that help explain variations in the dependent variable. The inclusion of those regressors reduces total variance, thus, improving precision on $\hat\beta$ and reducing the MDE.
+
+# Cluster-randomized Experiment 
+
+When analyzing individual data from programs randomized at a group level, it is important to take into account that the error term may not be independent across individuals. In this case, our simulation must take into account the clustered treatment assignment and the possibility of errors grouping. Consider the following setup
+
+$$
+\begin{equation}
+Y_{ij}=\alpha+\beta T_{j}+v_j+w_{ij}
+\end{equation}
+$$
+where $j\in\{1, \ldots, J\}$ indexes the cluster. Suppose same size clusters with $n$ individuals, $v_j$ is i.i.d. with variance $\tau^2$, and $w_{ij}$ is i.i.d. with variance $\sigma^2$. The cluster-robust standard error for $\hat\beta$ is given by
+
+$$
+\begin{equation}
+\sqrt{\frac{1}{P(1-P)}\frac{n\tau^2+\sigma^2}{nJ}}
+\end{equation}
+$$
+Therefore, the MDE in a cluster-randomized experiment is
+
+$$
+\begin{equation}
+MDE^{CR}=\left(t_{1-\kappa}+t_{\alpha/2}\right)\sqrt{\frac{1}{P(1-P)}\frac{n\tau^2+\sigma^2}{nJ}}
+\end{equation}
+$$
+which will be higher than the individually randomized $MDE$.
+
+```{r cluster, warning=FALSE, cache=TRUE}
+set.seed(123456)
+dt2 <- copy(dt)
+mde2_dt <- CJ(effect = eff_grid, replication = seq_len(reps))
+mde2_dt[, rejections := lapply(effect, function(x){
+  dt2[, by = escola, treat := rbinom(1, 1, prob = 0.5)]
+  dt2[, y := logico + x*treat]
+  model <- feols(y~treat+csw0(idade, mulher), data = dt2, 
+               cluster = ~escola, 
+               lean = TRUE)
+  lapply(model, function(x) pvalue(x)["treat"] < alpha)
+})]
+mde2_dt[, by = .(effect, replication), 
+       c("Model1","Model2","Model3") := rejections[[1]]]
+# Power table. Columns "Model" present the power for a given effect size
+table2 <- mde2_dt[, by = effect,
+                lapply(.SD, mean),
+                .SDcols = patterns("Model")]
+table2
+```
+
+What we see here, compared to the fully randomized experiment is a loss of power for a given effect size. When errors are clustered, the effective number of observations is reduced, the coefficient's standard error increases and so does the MDE.
+
+The previous tables suggest we have an increasing power function with relation to the treatment effect $\beta$. Take the first model, for example, depicted in the figure bellow.
+
+```{r power-func}
+ggplot(table2, aes(effect, Model1)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Effect size", y = "Power", 
+       title = "Power function",
+       subtitle = "Significance level fixed at 5%.") +
+  theme_light()
+```
+
+Suppose now we want to compute the MDE for a **specified power** and significance level from the baseline data we were given. Basically, we need to invert the power function. We don't actually have data on the treatment, remember we are dealing with survey data _prior_ to any intervention, such that we still _simulate_ treatment assignment and compute the power, although now we have a goal value to pursue. Once we get to that value, then we will know what is the minimum effect size that achieves the desired power. 
+
+```{r mde, warning=FALSE, cache=TRUE}
+set.seed(123456)
+kappa <- 0.8
+alpha <- 0.05
+reps <- 100
+
+power_diff <- function(beta, kappa = 0.8, alpha = 0.05, reps = 10){
+  dt2 <- copy(dt)
+  mde_dt <- CJ(effect = beta, replication = seq_len(reps))
+  mde_dt[, rejections := sapply(effect, function(x){
+    dt2[, by = escola, treat := rbinom(1, 1, prob = 0.5)]
+    dt2[, y := logico + x*treat]
+    model <- feols(y~treat, data = dt2, 
+                   cluster = ~escola, 
+                   lean = TRUE)
+    pvalue(model)["treat"] < alpha
+  })]
+  # Power value. It's an scalar now
+  pwr <- mde_dt[, mean(rejections)]
+  return(pwr - kappa)
+}
+res <- uniroot(power_diff, interval = c(0, 1),
+               kappa = kappa, alpha = alpha, reps = reps)
+```
+
+For this data, a specified power of `r kappa` and significance level at `r alpha`, we have found a MDE of `r res$root` with estimated precision of `r res$estim.prec`.
