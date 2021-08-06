@@ -1,0 +1,378 @@
+---
+title: "Bootstrap and Randomization Inference"
+author: "Rafael Felipe Bressan"
+date: "`r Sys.Date()`"
+output: 
+  prettydoc::html_pretty:
+    toc: true
+    theme: cayman
+    highlight: github
+    css: "style.css"
+bibliography: "references.bib"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r libs, message=FALSE, warning=FALSE}
+library(data.table)
+library(fixest)
+library(ggplot2)
+library(broom)
+
+setDTthreads(100) # data.table uses all cpu cores
+setFixest_nthreads(4) # fixest uses all cpu cores
+```
+
+# Bootstrap
+
+Exact finite-sample results are unavailable for most microeconometrics estimators and related test statistics, usually the researcher relies on asymptotic theory to draw inference. An alternative is provided by the bootstrap, @efron1994introduction. This approximates the distribution of a statistic by a Monte Carlo simulation, with sampling done from the empirical distribution of the observed data.
+
+Consider we have an iid sample $\{\mathbf{w_1}, \ldots, \mathbf{w_N}\}$,
+where $\mathbf{w_i} = (y_i , \mathbf{x_i})$ and $\hat\theta$ is an estimator that is $\sqrt{N}$ consistent and asymptotically normally distributed.
+
+A general bootstrap algorithm is:
+
+1. Given data $\mathbf{w_1},\ldots, \mathbf{w_N}$, draw a bootstrap sample of size $N$ and denote this as $\mathbf{w^∗_1},\ldots, \mathbf{w^∗_N}$
+
+2. Calculate an appropriate statistic using the bootstrap sample. For example the studentized statistic: $t(\hat\theta^*-\hat\theta)/s_{\hat\theta^*}$
+
+3. Repeat steps 1 and 2 $B$ independent times, obtaining $B$ bootstrap replications of the statistic.
+
+4. Use these $B$ bootstrap replications to obtain a bootstrapped version of the statistic
+
+Consider the usual test statistic $t_N=(\hat\theta-\theta_0)/s_{\hat\theta}$ for the hipothesis testing, $H_0: \theta = \theta_0$ against $H_a:\theta\neq\theta_0$. We perform $B$ bootstrap replications gathering studentized test statistics $t_1^*, \ldots, t_B^*$, **centered around $\hat\theta$** since resampling is from a distribution centered around $\hat\theta$. We prefer the studentized statistic since it provides inference with **asymptotic refinement**, @cameron2005microeconometrics.
+
+$$
+\begin{equation}
+t_b^*=(\hat\theta_b^*-\hat\theta)/s_{\hat\theta_b^*}
+\end{equation}
+$$
+
+The distribution of $t_1^*, \ldots, t_B^*$ is used to approximate the distribution of $t_N$. For an upper **one-sided** alternative test the bootstrap critical value is the upper $\alpha$ quantile of the $B$ ordered test statistics, the $(1-\alpha)(B+1)^{th}$ bootstrap statistic. For a **two-sided nonsymmetrical** test the bootstrap critical values are the lower $\alpha/2$ and upper $\alpha/2$ quantiles of the ordered test statistics, and the null hypothesis is rejected if the original $t_N$ statistic lies outside this range. **Symmetrical test** we instead order $|t^∗|$ and the critical value is the $1-\alpha$ quantile. The null hypothesis is rejected if $|t_N|$ exceeds this critical value.
+
+Let's make an example with our schools dataset. For now, we will ignore the possible clusterization of errors and compare the bootstraped standard error and studentized t-statistic to the default ones. We start by loading and cleaning the data, then we create a function[^boot] to compute $R$ bootstrap replications plus the estimations based on the sample.
+
+[^boot]: I am creating a function for demonstration purposes, you could use the package `boot` to create the bootstrap statistics and confidence intervals.
+
+```{r read}
+dt <- fread("Data/escolas.csv")[, -c("V1")]
+# Clean up the data. Never forget it!!
+dt[escola == "S/escola", escola := "99"][, escola := as.integer(escola)]
+dt <- dt[!is.na(logico)]
+head(dt)
+```
+
+```{r boot_func, cache=TRUE}
+boot_func <- function(dt, formula, coef, b = 0, R = 399){
+  stopifnot(is.data.table(dt))
+  # Model estimated from data
+  m0 <- feols(as.formula(formula), data = dt)
+  beta0 <- coefficients(m0)[coef]
+  se0 <- se(m0)[coef]
+  t0 <- (beta0 - b)/se0
+  names(beta0) <- NULL
+  names(se0) <- NULL
+  names(t0) <- NULL
+  
+  # Bootstrap
+  reps_dt <- data.table(replication = seq_len(R))
+  reps_dt[, bootstrap := lapply(replication, function(x){
+    # Resampling
+    idx <- sample(.N, .N, replace = TRUE)
+    mb <- feols(as.formula(formula), data = dt[idx])
+    beta <- coefficients(mb)[coef]
+    se <- se(mb)[coef]
+    t <- (beta - beta0)/se # studentized t-stat
+    names(beta) <- NULL
+    names(se) <- NULL
+    names(t) <- NULL
+    return(list(beta = beta, se = se, t = t))
+  })]
+  # # Insert m0 at first row
+  reps_dt <- rbind(
+    list(replication = 0,
+         bootstrap = list(list(beta = beta0, se = se0, t = t0))),
+    reps_dt
+    )
+  # Unpack the list-column
+  reps_dt <- reps_dt[, by = replication, bootstrap[[1]]]
+  return(reps_dt)
+}
+
+boot_dt <- boot_func(dt, "logico~mulher+idade", "mulher", R = 399)
+head(boot_dt)
+```
+
+The results of our bootstrap are contained in this data.table, including replication zero, which is the data model. We can visualize the coefficients and studentized statistics distributions.
+
+```{r boot_plot}
+boot_long <- melt(boot_dt, id.vars = "replication", variable.name = "stat")
+
+ggplot(boot_long[replication != 0 & stat != "se"], 
+       aes(value, fill = stat)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~stat, scales = "free") +
+  geom_vline(data = boot_long[replication == 0 & stat != "se"], 
+             aes(xintercept = value, color = "darkred")) +
+  labs(subtitle = sprintf("Bootstrap estimations, R = %s", nrow(boot_dt)-1)) +
+  guides(colour = "none") +
+  theme_classic()
+```
+
+Next we create two more functions to compute critical values for the statistic and an asymptotically refined confidence interval.
+
+```{r ci-critcal}
+t_boot <- function(t_vec, alpha = 0.05, type = c("two-sided", "one-sided")) {
+  type <- type[1]
+  if (type == "two-sided") {
+    ord <- sort(abs(t_vec))
+    uc <- ord[ceiling((1 - alpha)*length(ord))]
+    lc <- -uc
+  }
+  else {
+    ord <- sort(t_vec)
+    lc <- ord[floor(alpha*length(ord))]
+    uc <- ord[ceiling((1 - alpha)*length(ord))]
+  }
+  return(c(lower = lc, upper = uc))
+}
+
+ci_boot <- function(beta0, se0, t_vec, ci_level = 0.95) {
+  t_critical <- t_boot(t_vec, alpha = 1 - ci_level)
+  lower <- beta0 + t_critical["lower"]*se0
+  upper <- beta0 + t_critical["upper"]*se0
+  return(c(lower, upper))
+}
+
+t_boot(boot_dt$t)
+ci_boot(boot_dt[replication == 0, beta], boot_dt[replication == 0, se],
+        boot_dt$t)
+```
+
+Compare the results above to the default values we get from regression output.
+
+```{r boot_reg}
+tidy(feols(logico~mulher+idade, data = dt), 
+     conf.int = TRUE)[c("term", "estimate", "statistic", 
+                        "conf.low", "conf.high")]
+```
+
+## Wild Bootstrap[^luis]
+
+[^luis]: The algorithm and the implementation of the wild bootstrap here presented were largely based on the work of previous teaching assistant Luis Alvarez. His code in base R can be accessed at [GitHub](https://github.com/luisfantozzialvarez/ta_microeconometrics)
+
+Wild Bootstrap is a variant that has been shown to be a good alternative to Cluster-Robust standard errors when there are not many clusters in the sample. @canay2021wild provide conditions where this method works well when there are few clusters, but each cluster has *many* observations. These conditions include homogeneity-like restrictions on the distribution of covariates. Recall that, for a model:
+
+$$Y_{ic} = \beta X_{ic} + \gamma' Z_{ic} + \epsilon_{ic} $$
+where $c \in \{1,2\ldots C\}$ indexes clusters; a Wild BS level $\alpha$ test for  $H_0: \beta = b$  against $H_1: \beta \neq b$ consists of:
+
+1. Estimate the model imposing the null $\beta = b$. Let $\tilde{\gamma}$ and $\tilde{\epsilon_{ic}}$ denote the estimated coefficients and residuals from this step.
+
+2. For replications $s \in \{1,2 \ldots S\}$:
+    + For each $c \in \{1,2\ldots C\}$, draw $e_c^s = \pm 1$ with probability $1/2$.
+    + Generate an artificial outcome using the formula $\tilde{y}^s_{ic} = bX_{ic} + \tilde{\gamma}'Z_{ic} + e_c^s \tilde{\epsilon}_{is}$ 
+    + Run the unrestricted regression of $\tilde{y}^s_{ic}$ on $X_{ic}$ and $Z_{ic}$. Let $\hat{\beta}_s$ denote the OLS estimator obtained in this step.
+    + Store the $s$-th coefficient $\hat{\beta}_s$ or its studentized version, $\hat{t}_s = (\hat{\beta}_s-b)/\sqrt{\hat{V}(\hat{\beta}_s)}$, where $\hat{V}(\hat{\beta}_s)$ is an estimate of the variance of the OLS coefficient (say, CR standard error).
+    
+3. Compute the $1-\alpha$ quantile of $\{|\hat{\beta}_s-b|:s \in 1,2\ldots S\}$ ($\{|\hat{t}_s|:s \in 1,2\ldots S\}$).
+
+4. Reject the null if the absolute value of the unrestricted regression coefficient minus the value under the null $\hat{\beta}-b$ (unrestricted $t$-stat) *in the data* strictly exceeds the $(1-\alpha)$ quantile.
+
+If we want to compute a p-value, we just need to find the smallest $\alpha$ for which the null is rejected. @canay2021wild recommends studentization using cluster-robust standard errors, as it will work better when there are many clusters.
+
+Let's create a function that implements Wild BS:
+
+```{r wild-bs-func, cache=TRUE}
+wild_bs_func <- function(dt, formula, coef, cluster, b = 0, R = 399){
+  stopifnot(is.data.table(dt))
+  # No spaces in formula
+  formula <- gsub("\\s*", "", formula)
+  # Impose the null
+  pattern <- sprintf("%s\\+|\\+%s$", coef, coef)
+  null_form <- sub(pattern, "", formula)
+  off <- sprintf("~%d*%s", b, coef)
+  dep_var <- sub("^(.*)~(.*)", "\\1", formula)
+  m0 <- feols(as.formula(null_form), data = dt, 
+              cluster = cluster, 
+              offset = as.formula(off))
+  fitted0 <- fitted(m0)
+  resid0 <- resid(m0)
+  # Copy dt to create artificial outcomes
+  art_dt <- copy(dt)
+  # Bootstrap
+  reps_dt <- data.table(replication = seq_len(R))
+  reps_dt[, bootstrap := lapply(replication, function(x){
+    # Resampling
+    art_dt[, by = get(cluster),
+           e := 1 - 2*rbinom(1, 1, 0.5)]
+    art_dt[, c(dep_var) := fitted0 + e*resid0]
+    mb <- feols(as.formula(formula), cluster = cluster, data = art_dt)
+    betam <- coefficients(mb)[coef]
+    sem <- se(mb)[coef]
+    tstat <- (betam - b)/sem # studentized t-stat
+    names(betam) <- NULL
+    names(sem) <- NULL
+    names(tstat) <- NULL
+    return(list(beta = betam, se = sem, t = tstat))
+  })]
+  # Insert data estimation at first row
+  model <- feols(as.formula(formula), cluster = cluster, data = dt)
+  betam <- coefficients(model)[coef]
+  sem <- se(model)[coef]
+  tstat <- (betam - b)/sem
+  names(betam) <- NULL
+  names(sem) <- NULL
+  names(tstat) <- NULL
+
+  reps_dt <- rbind(
+    list(replication = 0,
+         bootstrap = list(list(beta = betam, se = sem, t = tstat))),
+    reps_dt
+    )
+  # Unpack the list-column
+  reps_dt <- reps_dt[, by = replication, bootstrap[[1]]]
+  return(reps_dt)
+}
+
+wild_dt <- wild_bs_func(dt, "logico~mulher+idade", "mulher", "escola")
+head(wild_dt)
+```
+
+```{r wild_plot}
+wild_long <- melt(wild_dt, id.vars = "replication", variable.name = "stat")
+
+ggplot(wild_long[replication != 0 & stat != "se"], 
+       aes(value, fill = stat)) +
+  geom_histogram(bins = 20) +
+  facet_wrap(~stat, scales = "free") +
+  geom_vline(data = boot_long[replication == 0 & stat != "se"], 
+             aes(xintercept = value, color = "darkred")) +
+  labs(subtitle = sprintf("Wild Bootstrap estimations, R = %s", nrow(wild_dt)-1)) +
+  guides(colour = "none") +
+  theme_classic()
+```
+
+```{r wild-ci}
+t_boot(wild_dt$t)
+ci_boot(wild_dt[replication == 0, beta], wild_dt[replication == 0, se],
+        wild_dt$t)
+```
+
+```{r wild_reg}
+tidy(feols(logico~mulher+idade, cluster = ~escola, data = dt), 
+     conf.int = TRUE)[c("term", "estimate", "statistic", 
+                        "conf.low", "conf.high")]
+```
+
+# Randomization Inference
+
+This method derives from Fisher's exact p-values (FEP). Given data from a completely randomized experiment our goal is to assess the _sharp null hypothesis_ of no effect of the active versus control treatment, that is, the null hypothesis under which, **for each unit** in the experiment, both values of the potential outcomes are identical. The most general case that fits into the FEP framework is the null hypothesis: 
+
+$$
+\begin{equation}
+H_0: Y_i(1) = Y_i(0) + \delta_i \quad i = 1,2\ldots N
+\end{equation}
+$$
+
+for some set of _pre-specified_ treatment effects $\delta_i$. Let $\mathbf{W}\in\{0,1\}^N$ be the stochastic assignment vector then, as usual, $\mathbf{Y^{obs}=Y(1)*W+Y(0)*(1-W)}$ and $\mathbf{T(Y^{obs}, W)}$ be a test statistic. Under the sharp null, for any statistic $\mathbf{T(Y^{obs}, W)}$, its distribution is completely known as all potential outcomes are revealed under the sharp null hypothesis. The test statistic is stochastic solely through the stochastic nature of the assignment vector, thus we can infer **exact p-values** through (randomized) _treatment assignment simulation_:
+
+1. Compute and store $T^{obs} = T(\mathbf{Y}^{obs}, \mathbf{W}^{obs})$
+2. For $p \in \{1,2\ldots P\}$:
+    * Draw $\mathbf{W}^p$ from the random, but possibly clustered, treatment assignment mechanism
+    * Compute and store $T^p = T(\mathbf{Y}^{obs}, \mathbf{W}^p)$
+3. The p-value is the proportion of simulated statistics that exceeds the observed one, $\hat p=1/(P+1)\left(1+\sum_{k=1}^P\mathbb{1}\{T^k\geq T^{obs}\}\right)$
+
+If we were to draw all possible combinations of assignment vectors this p-value would be exact. An $\alpha$-level test can be conducted by computing the test statistic in the observed data, and rejecting the null if this value exceeds the $1-\alpha$ quantile of the simulated distribution.
+
+Which statistic should we use? We also care about power, so we should use statistics for which high values indicate evidence against the null. We want the test statistic to have the ability to distinguish between the null hypothesis and an interesting alternative hypothesis. For example, the absolute value of the difference in means between treated and control units; the studentized version of this statistic; coefficients of a treatment effect regression, etc.
+
+Let's show an example using as statistic the absolute value of difference in means. First we will fake a school-clustered treatment effect to be added to schools dataset.
+
+```{r fake}
+dt2 <- copy(dt)
+dt2[, by = escola,
+    treat := rbinom(1, 1, 0.5)]
+dt2[, logico := 0.5*treat + logico]
+```
+
+Now `dt2` holds the treatment assignment under column `treat` and the logical exam's scores has been increased by 0.5 points for each treated unit. We will now create a function to perform the randomization inference[^comb], returning a vector consisting of significance level, statistic's critical value, observed statistic and the p-value associated to it.
+
+[^comb]: Note we are eventually repeating some treatment assignments in our "permutations". According to @Imbens2015, for an approximation of the p-value, it does not matter whether we sample with or without replacement, being that the latter will provide more accurate p-values when $P$ is low.
+
+```{r perm_func, cache=TRUE}
+permutation <- function(dt, dep_var, treatment, cluster, nper = 999, alpha = 0.05){
+  stopifnot(is.data.table(dt))
+  tobs <- dt[, mean(get(dep_var)), by = get(treatment)]
+  tobs <- abs(tobs[get == 1, V1] - tobs[get == 0, V1])
+  # Copy dt to create artificial outcomes
+  art_dt <- copy(dt)
+  # Permutations
+  perm_dt <- data.table(permutation = seq_len(nper))
+  perm_dt[, statistic := sapply(permutation, function(x){
+    # Random treatment assignment
+    art_dt[, by = get(cluster), c(treatment) := rbinom(1, 1, 0.5)]
+    tp <- art_dt[, mean(get(dep_var)), by = get(treatment)]
+    # Return the statistic
+    abs(tp[get == 1, V1] - tp[get == 0, V1])
+  })]
+  # Include tobs as the first statistic
+  perm_dt <- rbind(
+    list(
+      permutation = 0,
+      statistic = tobs),
+    perm_dt
+  )
+  pval <- perm_dt[, mean(statistic >= tobs)]
+  tc <- perm_dt[order(statistic)][(1 - alpha)*(nper + 1), statistic]
+  return(c(alpha = alpha, t_critical = tc, t_obs = tobs, p_value = pval))
+}
+rand_inf <- permutation(dt2, "logico", "treat", "escola")
+rand_inf
+```
+
+## A challenge for you!
+
+The `permutation` function above is not taking into account treatment assignments repetition. Your challenge is to create a function that makes randomization inference where all permutations are unique. As a hint, you may want to take a look at the function `permutations` from `arrangements` package.
+
+```{r perm2, cache=TRUE}
+permutation2 <- function(dt, dep_var, treatment, cluster, nper = 999, alpha = 0.05){
+  stopifnot(is.data.table(dt))
+  tobs <- dt[, mean(get(dep_var)), by = get(treatment)]
+  tobs <- abs(tobs[get == 1, V1] - tobs[get == 0, V1])
+  # Permutation by cluster, without repetition
+  treat_names <- paste0("treat", seq_len(nper))
+  cl <- dt[, by = get(cluster), .(treat = first(get(treatment)))]
+  cl[, (treat_names) := arrangements::permutations(
+    treat, 
+    nsample = nper,
+    layout = "list")
+  ]
+  # dt_join holds the dependent var and ALL pemuted treatment assignments
+  dt_join <- dt[cl[, -c("treat")], on = "escola==get"]
+  
+  perm_dt <- data.table(permutation = seq_len(nper))
+  perm_dt[, statistic := sapply(treat_names, function(x){
+    tp <- dt_join[, mean(get(dep_var)), by = get(x)]
+    abs(tp[get == 1, V1] - tp[get == 0, V1])
+  })]
+  # Include tobs as the first statistic
+  perm_dt <- rbind(
+    list(
+      permutation = 0,
+      statistic = tobs),
+    perm_dt
+  )
+  pval <- perm_dt[, mean(statistic >= tobs)]
+  tc <- perm_dt[order(statistic)][(1 - alpha)*(nper + 1), statistic]
+  return(c(alpha = alpha, t_critical = tc, t_obs = tobs, p_value = pval))
+}
+rand_inf2 <- permutation2(dt2, "logico", "treat", "escola")
+rand_inf2
+```
+
+# References
+
+

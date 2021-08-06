@@ -1,0 +1,40 @@
+/*
+@import url('https://fonts.googleapis.com/css2?family=Fira+Sans:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400;1,500;1,700&display=swap');
+
+@import url(https://cdn.rawgit.com/tonsky/FiraCode/1.204/distr/fira_code.css);
+*/
+body{ /* Normal  */
+    /*font-family: 'Fira Sans', serif;*/
+    font-size: 15px;
+  }
+td {  /* Table  */
+  font-size: 10px;
+}
+
+/*
+h1.title {
+  font-size: 38px;
+  color: DarkRed;
+} 
+
+
+h1 { 
+  font-size: 28px;
+  color: DarkBlue;
+}
+h2 { 
+    font-size: 22px;
+  color: DarkBlue;
+}
+h3 { 
+  font-size: 18px;
+  font-family: "Times New Roman", Times, serif;
+  color: DarkBlue;
+}
+code.r{ 
+    font-size: 12px;
+}
+pre { 
+    font-size: 14px;
+}
+*/

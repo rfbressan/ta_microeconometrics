@@ -3,8 +3,11 @@ title: "Regressions with `fixest` R package"
 author: "Rafael Felipe Bressan"
 date: "`r Sys.Date()`"
 output: 
-  html_document:
+  prettydoc::html_pretty:
     toc: true
+    theme: cayman
+    highlight: github
+    css: "style.css"
 bibliography: "references.bib"
 ---
 
@@ -189,6 +192,38 @@ iplot(es, cluster = ~Origin + Product)
 
 # Tidying up multiple regressions
 
+You can use data frames (and data.table in particular) to store models, lists, and other data frames in what is called a list-column. This will be a nested `data.table`, where some columns may be the usual vectors but the list-column will hold a **list of more complex** data structures. The table will store the products of your data analysis in an organized way, and you can manipulate the table with your familiar tools.
+
+Imagine a `data.table` created to hold many parameterized models. One column to hold the dependent variable, another for regressors and one more for instrumental variables. Each row will have all the components related to a regression, therefore, the natural place to hold the results of such regression is in the same `data.table`, there enters the list-column. 
+
+
+```{r tidy-iv}
+r_ed <- "union+education+age+age_2+female+race+marital_status+class_of_worker"
+r_iv <- sub("education\\+", "", r_ed)
+models_dt <- CJ(
+  y = c("earnings", "log(earnings)"),
+  x = c("union", r_ed, r_iv))
+
+models_dt[, iv := ifelse(x == r_iv, "|education~veteran", "")]
+models_dt[, form := paste0(y, "~", x, iv)]
+models_dt[, reg := lapply(form, function(x){
+  feols(as.formula(x),
+        data = dt2,
+        se = "hetero",
+        lean = TRUE)
+})]
+models_dt
+```
+
+So, now we have a data.table called `models_dt` which holds parameters and fitted models, everything in one place. The column `reg` is a list-column, and each element of this list (corresponding to one row) is a `fixest` regression result. Now it is quite easy to select only a subset of models and present them in a table, for example.
+
+```{r res-iv}
+etable(models_dt[y == "log(earnings)", reg], keep = c("education", "union"), 
+       fitstat = ~.+ivf+ivf.p+wh+wh.p)
+```
+
+This is a very simple, and short, example but sometimes the number of models we want to estimate grows exponentially and, in those cases this approach of holding models _inside_ a data frame proves useful. Would he choose one name for each regression run, @martin1997 would be in trouble to come up with _insightful_ names...
+
 # Useful Links
 
 [fixest Walkthrough](https://cran.r-project.org/web/packages/fixest/vignettes/fixest_walkthrough.html)
@@ -196,5 +231,7 @@ iplot(es, cluster = ~Origin + Product)
 [fixest Homepage](https://lrberge.github.io/fixest/)
 
 [List-columns in data.table](https://www.rstudio.com/resources/rstudioconf-2020/list-columns-in-data-table-reducing-the-cognitive-computational-burden-of-complex-data/)
+
+[ Prof. Nick Huntington-Klein video on fixest](https://www.youtube.com/watch?v=bQZGDKrbHoA)
 
 # References

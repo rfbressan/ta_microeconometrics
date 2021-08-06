@@ -3,8 +3,12 @@ title: "Minimum Detectable Effect"
 author: "Rafael Felipe Bressan"
 date: "`r Sys.Date()`"
 output: 
-  html_document:
+  prettydoc::html_pretty:
     toc: true
+    theme: cayman
+    highlight: github
+    css: "style.css"
+bibliography: "references.bib"
 ---
 
 ```{r setup, include=FALSE}
@@ -126,7 +130,7 @@ $$
 MDE^{CR}=\left(t_{1-\kappa}+t_{\alpha/2}\right)\sqrt{\frac{1}{P(1-P)}\frac{n\tau^2+\sigma^2}{nJ}}
 \end{equation}
 $$
-which will be higher than the individually randomized $MDE$.
+which will be higher than the individually randomized $MDE$ and varies roughly proportionally as a function of the number of clusters $J$ and much less as a function of the number of individuals within a cluster.
 
 ```{r cluster, warning=FALSE, cache=TRUE}
 set.seed(123456)
@@ -191,3 +195,17 @@ res <- uniroot(power_diff, interval = c(0, 1),
 ```
 
 For this data, a specified power of `r kappa` and significance level at `r alpha`, we have found a MDE of `r res$root` with estimated precision of `r res$estim.prec`.
+
+But what if this MDE is not enough? By how much should we increase the sample size to achieve a desired MDE? The "pilot" data has already been collected and cannot (suppose that is the case) be redone. As a rule of thumb the MDE decreases at the square root of _"effective observations"_ rate, where effective observations would be the number of clusters in a grouped experiment. Then, the ratio of MDEs is proportional to the square root of the inverse ratio of observations.
+
+$$
+\begin{equation}
+\frac{MDE_{pilot}}{MDE}=\sqrt{\frac{N}{N_{pilot}}}
+\end{equation}
+$$
+
+Once we have calculated $MDE_{pilot}$, for a given power and significance level, it is easy to estimate the minimun sample size required in order to reach a goal MDE. Suppose we want to halve the $MDE_{pilot}$, then, keeping constant power and significance, we should quadruple the sample size.
+
+# Useful Links
+
+[Statistical Power for Randomized Health Experiments](https://vimeo.com/347632997)

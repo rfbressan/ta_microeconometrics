@@ -1,0 +1,418 @@
+---
+title: "Observational Studies and Propensity Score"
+author: "Rafael Felipe Bressan"
+date: "`r Sys.Date()`"
+output: 
+  prettydoc::html_pretty:
+    toc: true
+    theme: cayman
+    highlight: github
+    css: "style.css"
+bibliography: "references.bib"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r inst, message=FALSE}
+library(data.table)
+library(fixest)
+library(kableExtra)
+library(modelsummary)
+library(hdm)
+library(ggplot2)
+```
+
+# Selection on Observables Framework
+
+Now we will depart from experiments and start to use **observational data** to infer causality. In that case, we need the treatment assignment mechanism to be regular. There are 3 conditions that an assignment mechanism must satisfy in order to be considered regular:
+
+1. Individualistic assignment: This limits the dependence of a particular unit's assignment probability on the values of covariates and potential outcomes for other units.
+
+An assignment mechanism $\operatorname{Pr}(\mathbf{W} \mid \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1))$ is individualistic if, for some function $q(\cdot) \in[0,1],$ 
+
+$$
+p_{i}(\mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1))=q\left(X_{i}, Y_{i}(0), Y_{i}(1)\right), \text { for all } i=1, \ldots, N
+$$
+
+and
+
+$$
+\operatorname{Pr}(\mathbf{W} \mid \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1))=c \cdot \prod_{i=1}^{N} q\left(X_{i}, Y_{i}(0), Y_{i}(1)\right)^{W_{i}}\left(1-q\left(X_{i}, Y_{i}(0), Y_{i}(1)\right)\right)^{1-W_{i}}
+$$
+
+for $(\mathbf{W}, \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1)) \in \mathbb{A},$ for some set $\mathbb{A},$ and zero elsewhere ($c$ is the constant that ensures that the probabilities sum to unity).
+
+2. Probabilistic assignment: This requires the assignment mechanism to imply a nonzero probability for each treatment value, for every unit.
+
+An assignment mechanism $\operatorname{Pr}(\mathbf{W} \mid \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1))$ is probabilistic if the probability of assignment to treatment for unit i is strictly between zero and one: 
+
+$$
+0<p_{i}(X_i, Y_i(0), Y_i(1))<1, \text { for each possible } \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1)
+$$
+for all $i=1, \ldots, N.$
+
+3. Unconfounded assignment: This disallows dependence of the assignment mechanism on the potential outcomes.
+
+An assignment mechanism is unconfounded if it does not depend on the potential
+outcomes:
+\begin{equation*}
+\operatorname{Pr}(\mathbf{W} \mid \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1))=\operatorname{Pr}\left(\mathbf{W} \mid \mathbf{X}, \mathbf{Y}^{\prime}(0), \mathbf{Y}^{\prime}(1)\right)
+\end{equation*}
+for all $\mathbf{W}, \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1), \mathbf{Y}^{\prime}(0),$ and $\mathbf{Y}^{\prime}(1)$
+
+The unconfounded assumption is also known as the conditional independence assumption -- CIA, [@Angrist2008]. Thus, if the assignment mechanism is uncounfounded and individualistic the probability of assignment is the _individual_ propensity score. Also, given individualistic assignment, a mechanism that is both probabilistic and uncounfounded is referred as _strongly ignorable treatment assignment_. 
+
+## Initial Covariate's Balance
+
+We will use once again the "schools" dataset.
+
+```{r read, cache=TRUE}
+dt <- fread("Data/cps_union_data.csv")
+#' Cleaning
+dt <- dt[!is.na(earnings)] # Keep only not NA in earnings
+dt[, c("V1", "CPSID", "CPSIDP", "public_housing", "employed") := NULL]
+dt[, `:=`(
+  marital_status = ifelse(marital_status %in% c(1, 2), 1, 0),
+  race = ifelse(race == 1, 1, 0),
+  age_2 = age^2
+)]
+cat_cols <- c("class_of_worker", "class_of_worker_last_year")
+dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
+```
+
+```{r init-bal, results = "asis"}
+datasummary_balance(~union, data = dt,
+                    title =  "Descriptive statistics by treatment group for an observational study.")
+```
+
+@Imbens2015 point that the goal is, at least at this point, to assess whether the differences between the two sample distributions are so large that simple adjustment methods are unlikely to remove biases in estimated treatment/control average differences. So, they suggest reporting the normalized differences:
+
+\begin{equation} 
+\hat\Delta_{ct}= \frac{\bar X_t - \bar X_c}{\sqrt{(s^2_t+s^2_c)/2}}
+\end{equation}
+
+where $\bar X_t$ and $\bar X_c$ denote the sample means for treatment and control groups, $s^2_t$ and $s^2_c$ are the sample variances. They claim that, given a large enough sample size, the t-statistic of the difference in means will always be high enough reject the null hypothesis, whereas the normalized difference, $\hat\Delta_{ct}$ remains unchanged when the sample size increases. The challenge of adjusting for differences in the covariates should be simpler when one has more observations, but that is not what a t-test is telling us. An extra benefit of the normalized difference is that it is expressed in standard deviation units. Differences of 0.25 or less seem to indicate good balance[^ttest].
+
+[^ttest]: I refer you to the following reading: [Should we require balance t-tests of baseline observables in randomized experiments?](https://blogs.worldbank.org/impactevaluations/should-we-require-balance-t-tests-baseline-observables-randomized-experiments)
+
+```{r norm-diff}
+# Compute the normalized difference
+norm_diff <- function(xt, xc, sdt, sdc) {
+  (xt - xc)/(sqrt((sdt^2 + sdc^2)/2))
+}
+# Select the numerical columns and compute the normalized
+# difference
+num_cols <- colnames(dt)[sapply(dt, is.numeric)]
+
+dt_long <- melt(dt[, ..num_cols], id.vars = "union",
+                variable.factor = FALSE)
+dt_long <- dt_long[, by = .(variable, union),
+                   .(mean = mean(value, na.rm = TRUE),
+                     sd = sd(value, na.rm = TRUE),
+                     N = .N)]
+dt_wide <- dcast(dt_long, variable~union, 
+                 value.var = c("mean", "sd", "N"))
+dt_wide[,  `:=`(
+  diff_mean = mean_1 - mean_0,
+  std_err = sqrt(sd_1^2/N_1 + sd_0^2/N_0),
+  t_stat = (mean_1 - mean_0)/sqrt(sd_1^2/N_1 + sd_0^2/N_0),
+  norm_diff = norm_diff(mean_1, mean_0, sd_1, sd_0)
+) ]
+# Reorder the columns by their index
+vari <- which(colnames(dt_wide) == "variable")
+treat <- grep("_1", colnames(dt_wide))
+cont <- grep("_0", colnames(dt_wide))
+setcolorder(dt_wide, c(vari, treat, cont))
+```
+
+And now we can present the normalized difference alongside to other metrics in the balance table.
+
+
+```{r norm-bal, results = "asis"}
+kbl(dt_wide[, -c("N_1", "N_0")], 
+    digits = 2,
+    col.names = c("Variable", "Mean", "Std.Dev",
+                  "Mean", "Std.Dev",
+                  "Diff. in Means", "Std. Error", "t-stat",
+                  "Norm. Diff.")) |> 
+  kable_classic(full_width = FALSE) |> 
+  add_header_above(c(" " = 1,
+                     "Treatment" = 2,
+                     "Control" = 2,
+                     " " = 4))
+```
+
+Since we have multiple covariates, it is also useful to understand their joint distribution. In this case we want to have a single measure of the difference between the treatment arms distributions. Let $K$ be the number of covariates, the
+number of components of the vector of pre-treatment variables $X_i$, then we have $K$-vectors for sample means, $\bar X_t$ and $\bar X_c$, and $K\times K$ covariance matrices, $\hat\Sigma_t$ and $\hat\Sigma_c$.
+
+$$
+\hat\Sigma_j=\frac{1}{N_j-1}\sum_{i\in j}(X_i-\bar X_j)(X_i-\bar X_j)\prime\, , \quad\text{for } j\in\{c, t\}
+$$
+
+And that single measure we are seeking for is the Mahalanobis distance:
+
+$$
+\hat\Delta_{ct}^{mv}=\sqrt{(\bar X_t-\bar X_c)\prime\left(\frac{\hat\Sigma_c+\hat\Sigma_t}{2}\right)^{-1}(\bar X_t-\bar X_c)}
+$$
+
+```{r mahalo}
+means <- dt[, ..num_cols
+             ][, by = union, 
+               lapply(.SD, mean, na.rm = TRUE)]
+covars <- dt[, ..num_cols
+             ][, by = union,
+               .(sigma = list(var(.SD, na.rm = TRUE)))] 
+# Average of Sigma matrices
+m_sig <- (covars$sigma[[1]] + covars$sigma[[2]])/2
+# Use unlist to convert data.table rows into vectors
+mahalo <- mahalanobis(unlist(means[union == 1, -c("union")]),
+                      unlist(means[union == 0, -c("union")]),
+                      m_sig)
+mahalo
+```
+
+
+# Propensity Score
+
+Here we focus on the statistical problem of estimating the **conditional probability of receiving the treatment** given the observed covariates. The end goal is to obtain estimates of the propensity score that balance the covariates between treated and control subsamples.
+
+We have seen in class that the propensity score is a balancing score and those have an important property: treatment assignment is unconfounded when conditioned on a balancing score:
+
+$$W_i\perp Y_i(0), Y_i(1)|e(X_i)$$
+
+and the propensity score is the probability of being assigned to treatment given the full set of observed covariates:
+
+$$e(X_i)=Pr(W_i=1|X_i)$$
+
+Typical binary outcome models used to estimate a propensity score are, [@cameron2005microeconometrics]:
+
+```{r bin_out, echo=FALSE}
+knitr::include_graphics("Figs/binary_outcomes.png")
+```
+
+We will proceed to the following section estimating logit models.
+
+## Covariate's selection
+
+Before estimating the propensity score, the researcher must specify wich covariates and their transformations enter the vector $X$. It may not be sufficient to include them only linearly, but also, we do not want to be too flexible in the specification and risk to incur in overfitting, which will spoil the overlap assumption.
+
+So we must have a principled method to select variables to be included in the propensity score that is able to balance between the two forces discussed. @Imbens2015 propose a stepwise procedure for selecting covariates and high-order terms[^sw], but also there is a growing literature on automatic selection, mainly using the Lasso algorithm, @hastie2019statistical and @belloni2017program .
+
+[^sw]: Be warned. In all my tests, even with a moderate sized dataset this procedure is extremely inefficent and slow.
+
+_Stepwise Selection_
+
+```{r sw-func}
+#' Stepwise model selection - Imbens and Rubin -----------------------------
+#' Imbens and Rubin's stepwise selection algorithm
+#' treatment: character variable for treatment indicator variable
+#' Xb: character vector with names of basic covariates: you may pass it as c() 
+#' if you do not want any basic covariate
+#' Xt: character vector with names for covariates to be tested for inclusion
+#' data: dataframe with variables
+#' Clinear: threshold, in terms of likelihood ratio statistics, for inclusion of
+#' linear terms
+#' Cquadratic: threshold, in terms of likelihood ratio statistics, for inclusion
+#' of quadratic/interaction terms
+#' Intercept: does the model include intercept?
+#' Author: Luis Alvarez
+#' Modifications: Rafael F. Bressan
+ir_stepwise <- function(treatment, Xb, Xt, data, 
+                        Clinear = 1, 
+                        Cquadratic = 2.71, 
+                        intercept = TRUE)
+{
+  #Add or not intercept
+  if (intercept)
+    inter.add = "1" 
+  else inter.add = "-1"
+    
+  #Formula for model
+  if (length(Xb) == 0)
+    formula <- paste(treatment, inter.add, sep = " ~ ") 
+  else formula <- paste(treatment, paste(c(inter.add,Xb), collapse = " + "), 
+                       sep = " ~ ")
+  
+  continue <- TRUE
+  Xt_left <- Xt
+  # First order inclusion
+  while (continue) {
+    null.model <- fixest::feglm(as.formula(formula), data, family = "binomial")
+    null.lkl <- logLik(null.model)
+    test.stats <- c()
+    for (covariate in Xt_left)
+    {
+      formula.test <-  paste(formula, covariate, sep = " + ")
+      test.model <- fixest::feglm(as.formula(formula.test), data, 
+                                family = "binomial")
+      
+      lkl.ratio <- 2*(logLik(test.model) - null.lkl)
+      test.stats <- c(test.stats, lkl.ratio)
+    }
+    
+    if (max(test.stats,na.rm = TRUE) < Clinear)
+      continue <- FALSE 
+    else {
+      add.coef <- Xt_left[which.max(test.stats)]
+      formula <- paste(formula, add.coef, sep = " + ")
+      Xt_left <- Xt_left[-which.max(test.stats)]
+    }
+    
+  }
+  
+  #Defining Xstar set. Set of first order included variables
+  Xstar <- c(Xb, Xt[!(Xt %in% Xt_left)])
+  
+  #Creating all combinations of Xstar interactions
+  combinations <- expand.grid(Xstar, Xstar)
+  Xcomb <- paste(combinations[,1],combinations[,2],sep = ":")
+  continue <- TRUE
+  Xcomb_left <- Xcomb
+  
+  while (continue) {
+    null.model <- fixest::feglm(as.formula(formula), data, family = "binomial")
+    
+    null.lkl <- logLik(null.model)
+    
+    test.stats <- c()
+    for (covariate in Xcomb_left)
+    {
+      formula.test <- paste(formula, covariate, sep = " + ")
+      test.model <- fixest::feglm(as.formula(formula.test), data, 
+                                family = "binomial")
+      lkl.ratio <- 2*(logLik(test.model) - null.lkl)
+      test.stats <- c(test.stats, lkl.ratio)
+    }
+    
+    if (max(test.stats,na.rm = TRUE) < Cquadratic)
+      continue <- FALSE 
+    else {
+      add.coef <- Xcomb_left[which.max(test.stats)]
+      formula <- paste(formula, add.coef, sep = " + ")
+      Xcomb_left <- Xcomb_left[-which.max(test.stats)]
+    }
+  }
+  
+  return(list(formula = formula, inc_x = Xstar))
+}
+```
+
+The stepwise method asks for a _basic_ set of covariates, $X_b$, which will always be included in the specification and an additional set of covariates, $X_t$, that should be tested for inclusion. The key characteristic of these covariates is that they are known not to be affected by the treatment. Then, the algorithm tests for the interactions and quadratic terms of variables in $X^∗$, the set of included variables. All tests are based on likelihood ratio statistics and thresholds in terms of these statistics for inclusion (see Appendix A of @Imbens2015b for details).
+
+```{r sw-est}
+#' Drop rows with NA
+dt <- dt[complete.cases(dt)]
+#' Basic covariates
+xb <- c("age", "age_2", "female", "race", "marital_status", 
+        "education", "class_of_worker")
+#' Test covariates
+xt <- c("worked_last_year", "private_health_insurance", "medicaid")
+#' TEST ONLY: Select a random sample of full data for quick results
+set.seed(1234)
+ds <- dt[sample(.N, 1000)]
+ir_tic <- Sys.time()
+ir_form <- ir_stepwise("union", xb, xt, data = ds)
+ps_ir <- feglm(as.formula(ir_form$formula), family = "binomial", 
+               data = ds[, -c("earnings")])
+ir_proc_time <- Sys.time() - ir_tic
+attr(terms(ps_ir), "term.labels")
+```
+
+_Lasso Selection_
+
+```{r lasso-est}
+#' Model selection via Lasso 
+lasso_tic <- Sys.time()
+ps_lasso <- rlassologit(union~(.)^2, 
+                        data = ds[, c("union", ..xb, ..xt)])
+lasso_proc_time <- Sys.time() - lasso_tic
+names(coef(ps_lasso))[ps_lasso$index]
+```
+
+Finally, the third model for estimating the propensity score was a _full_ logit model with all meaningful variables and their interactions up to second order.
+
+```{r full-est}
+#' Model with full set of covariates!
+fml <- paste0("union~(", paste(c(xb, xt), collapse = "+"), ")^2")
+full_tic <- Sys.time()
+ps_full <- feglm(as.formula(fml), family = "binomial",
+                data = ds[, c("union", ..xb, ..xt)])
+full_proc_time <- Sys.time() - full_tic
+attr(terms(ps_full), "term.labels")
+```
+
+## Assessing overlap
+
+```{r ds}
+ds[, `:=`(
+  ir_ps = predict(ps_ir),
+  lasso_ps = predict(ps_lasso),
+  full_ps = predict(ps_full)
+)]
+
+cbind(stat = rep(c("Min", "Max", "Mean"), 2), 
+      ds[, by = union, 
+         lapply(.SD, function(x){c(min(x), max(x), mean(x))}), 
+         .SDcols = patterns("_ps")])
+```
+
+```{r ds-plot}
+ds_long <- melt(ds, id.vars = "union",
+                measure.vars = c("ir_ps", "lasso_ps", "full_ps"),
+                variable.name = "model",
+                value.name = "ps")
+
+ggplot(ds_long, aes(ps)) +
+  geom_histogram(aes(y = stat(density)), color = "White", bins = 50) +
+  facet_grid(union~model, 
+             labeller = labeller(union = c(`0` = "Not Union", 
+                                           `1` = "Union"),
+                                 model = c(ir_ps = "Imbens-Rubin", 
+                                           lasso_ps = "Lasso", 
+                                           full_ps = "Full"))) +
+  labs(x = "Propensity score") +
+  theme_light()
+```
+
+## Trimming to improve PS balance
+
+```{r trimming}
+#' Author: Luis Alvarez
+#' Adapted by: Rafael F. Bressan
+trimming <- function(ps)
+{
+  inv.vec = 1/(ps*(1 - ps))
+  
+  if (max(inv.vec) <= 2*mean(inv.vec))
+  {
+    print("No trimming")
+    return(rep(TRUE, length(ps))) 
+  }else {
+    # value function. eq. 16.8 Imbens and Rubin
+    value_fun <- function(gamma) {
+      2*sum(inv.vec[inv.vec <= gamma])  - gamma*sum(inv.vec <= gamma)
+    }
+    # root finding. g is a list with root
+    g <- uniroot(value_fun, c(min(inv.vec), max(inv.vec)))
+    
+    alpha.trim <- 1/2 - sqrt(1/4 - 1/g$root)
+    print(paste("Trimming threshold alpha is ", alpha.trim))
+    return(ps <= 1 - alpha.trim &  ps >= alpha.trim)
+  }
+}
+```
+
+```{r trim-ds}
+ds_long[, by = model, trim_keep := trimming(ps)]
+
+ds_long[(trim_keep), by = .(union, model),
+        .(min = min(ps),
+          max = max(ps),
+          mean = mean(ps))
+]
+```
+
+## Re-weighted Covariate's Balance
+
