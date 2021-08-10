@@ -1,5 +1,6 @@
 ---
-title: "Doubly-Robust Estimations"
+title: "Estimations"
+subtitle: "Matching, Subclassification and Doubly-Robust" 
 author: "Rafael Felipe Bressan"
 date: "`r Sys.Date()`"
 output: 

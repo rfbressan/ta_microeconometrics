@@ -6,5 +6,6 @@ Teaching assistance of Microeconometrics I. EESP 2021
 - Class 2: Linear Regressions with fixest R package
 - Class 3: Minimum Detectable Effect
 - Class 4: Bootstrap and Randomization Inference
-- Class 5: Covariates Balancing
-- Class 6: Propensity Score and Doubly-Robust estimations
+- Class 5: Propensity Score and Covariates Balancing
+- Class 6: Estimations: Matching, Subclassification and Doubly-Robust
+- Class 7: Manski Bounds

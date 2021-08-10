@@ -24,6 +24,10 @@ library(hdm)
 library(ggplot2)
 ```
 
+```{r dt-utils, echo=FALSE}
+source("dt_utils.R")
+```
+
 # Selection on Observables Framework
 
 Now we will depart from experiments and start to use **observational data** to infer causality. In that case, we need the treatment assignment mechanism to be regular. There are 3 conditions that an assignment mechanism must satisfy in order to be considered regular:
@@ -80,6 +84,7 @@ dt[, `:=`(
 )]
 cat_cols <- c("class_of_worker", "class_of_worker_last_year")
 dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
+dt <- dt[complete.cases(dt)]
 ```
 
 ```{r init-bal, results = "asis"}
@@ -97,58 +102,112 @@ where $\bar X_t$ and $\bar X_c$ denote the sample means for treatment and contro
 
 [^ttest]: I refer you to the following reading: [Should we require balance t-tests of baseline observables in randomized experiments?](https://blogs.worldbank.org/impactevaluations/should-we-require-balance-t-tests-baseline-observables-randomized-experiments)
 
-```{r norm-diff}
+We may also wish to compare measures of dispersion in the two distributions. This can be done with the logarithm of the ratio of standard deviations, which is invariant to scale:
+
+$$\hat\Gamma_{ct}=\ln(s_t)-\ln(s_c)$$
+
+A second approach to comparing distributions, one can investigate what fraction of the treated (control) units have covariate values that are in the tails of
+the distribution of the controls (treated). For example, we can compute the probability mass of the covariate distribution for the treated that is **outside** the $1−\alpha/2$ and the $\alpha/2$ quantiles of the covariate distribution for the controls:
+
+$$\hat\pi_t^\alpha=\left(1-\left(\hat F_t(\hat F_c^{-1}(1-\alpha/2))\right)+\hat F_t(\hat F_c^{-1}(\alpha/2))\right)$$
+
+and the analogous quantity for the control distribution:
+
+$$\hat\pi_c^\alpha=\left(1-\left(\hat F_c(\hat F_t^{-1}(1-\alpha/2))\right)+\hat F_c(\hat F_t^{-1}(\alpha/2))\right)$$
+
+where $\hat F_c(\cdot)$ and $\hat F_t(\cdot)$) are the empirical distribution function of a covariate in the control and treated subsamples, respectively:
+
+$$\hat F_j(x)=\frac{1}{N_j}\sum_{W_i\in j}\mathbf{1}_{X_i}\leq x\, , \quad\text{for } j\in\{c, t\}$$
+and the $\hat F^{-1}(\cdot)$ denotes the quantile function of the empirical distribution.
+
+```{r norm-diff, cache=TRUE}
 # Compute the normalized difference
 norm_diff <- function(xt, xc, sdt, sdc) {
   (xt - xc)/(sqrt((sdt^2 + sdc^2)/2))
 }
-# Select the numerical columns and compute the normalized
-# difference
+
+coverage <- function(dt, treat_var, variables, values, alpha = 0.05) {
+  stopifnot(is.data.table(dt))
+
+    quantiles <- dt[, by = .(get(treat_var), get(variables)),
+                   lapply(.SD, function(x){
+                     c(quantile(x, 1 - alpha/2),
+                       quantile(x, alpha/2)
+                     )
+                   }),
+                   .SDcols = values
+  ][, q := rep(c("high", "low"), .N/2)]
+    
+  quantiles <- dcast(quantiles, get+get.1~q, value.var = "value")
+  setnames(quantiles, c("get", "get.1"), c(treat_var, variables))
+  quantiles[, not_treat_var := 1*(!get(treat_var))]
+  
+  pi_dt <- merge(dt_long, quantiles[, !c(..treat_var)], 
+                  by.x = c(treat_var, variables),
+                  by.y = c("not_treat_var", variables),
+                  all.x = TRUE)
+  pi_dt <- pi_dt[, by = .(get(treat_var), get(variables)),
+         .(pi = (1 - mean(value <= high)) + mean(value <= low))]
+  pi_dt <- dcast(pi_dt, get.1~get, value.var = "pi")
+  setnames(pi_dt, c("get.1", "0", "1"), c(variables, "pi_cont", "pi_treat"))
+  return(pi_dt)
+}
+# Select the numerical columns and compute the normalized difference and log
+# ratio
 num_cols <- colnames(dt)[sapply(dt, is.numeric)]
 
 dt_long <- melt(dt[, ..num_cols], id.vars = "union",
                 variable.factor = FALSE)
-dt_long <- dt_long[, by = .(variable, union),
-                   .(mean = mean(value, na.rm = TRUE),
-                     sd = sd(value, na.rm = TRUE),
-                     N = .N)]
-dt_wide <- dcast(dt_long, variable~union, 
+
+dt_summa <- dt_long[, by = .(variable, union),
+                   .(N = .N,
+                     mean = mean(value, na.rm = TRUE),
+                     sd = sd(value, na.rm = TRUE)
+                     )]
+dt_wide <- dcast(dt_summa, variable~union, 
                  value.var = c("mean", "sd", "N"))
 dt_wide[,  `:=`(
   diff_mean = mean_1 - mean_0,
   std_err = sqrt(sd_1^2/N_1 + sd_0^2/N_0),
   t_stat = (mean_1 - mean_0)/sqrt(sd_1^2/N_1 + sd_0^2/N_0),
-  norm_diff = norm_diff(mean_1, mean_0, sd_1, sd_0)
+  norm_diff = norm_diff(mean_1, mean_0, sd_1, sd_0),
+  log_ratio = log(sd_1) - log(sd_0)
 ) ]
+
+pi_dt <- coverage(dt_long, treat_var = "union", 
+                  variables = "variable", 
+                  values = "value")
+# Join coverages to dt_wide
+bal_dt <- dt_wide[pi_dt, on = "variable"]
 # Reorder the columns by their index
 vari <- which(colnames(dt_wide) == "variable")
 treat <- grep("_1", colnames(dt_wide))
 cont <- grep("_0", colnames(dt_wide))
-setcolorder(dt_wide, c(vari, treat, cont))
+setcolorder(bal_dt, c(vari, treat, cont))
 ```
 
 And now we can present the normalized difference alongside to other metrics in the balance table.
 
 
 ```{r norm-bal, results = "asis"}
-kbl(dt_wide[, -c("N_1", "N_0")], 
+kbl(bal_dt[, -c("N_1", "N_0", "diff_mean", "std_err")], 
     digits = 2,
     col.names = c("Variable", "Mean", "Std.Dev",
                   "Mean", "Std.Dev",
-                  "Diff. in Means", "Std. Error", "t-stat",
-                  "Norm. Diff.")) |> 
+                  "t-stat", "Norm. Diff.", "Log Ratio", "$\\pi_c^{0.05}$", "$\\pi_t^{0.05}$"),
+    escape = FALSE) |> 
   kable_classic(full_width = FALSE) |> 
   add_header_above(c(" " = 1,
                      "Treatment" = 2,
                      "Control" = 2,
-                     " " = 4))
+                     "Overlap Measures" = 5))
 ```
 
 Since we have multiple covariates, it is also useful to understand their joint distribution. In this case we want to have a single measure of the difference between the treatment arms distributions. Let $K$ be the number of covariates, the
 number of components of the vector of pre-treatment variables $X_i$, then we have $K$-vectors for sample means, $\bar X_t$ and $\bar X_c$, and $K\times K$ covariance matrices, $\hat\Sigma_t$ and $\hat\Sigma_c$.
 
 $$
-\hat\Sigma_j=\frac{1}{N_j-1}\sum_{i\in j}(X_i-\bar X_j)(X_i-\bar X_j)\prime\, , \quad\text{for } j\in\{c, t\}
+\hat\Sigma_j=\frac{1}{N_j-1}\sum_{i\in j}(X_i-\bar X_j)(X_i-\bar X_j)\prime
 $$
 
 And that single measure we are seeking for is the Mahalanobis distance:
@@ -301,22 +360,20 @@ ir_stepwise <- function(treatment, Xb, Xt, data,
 
 The stepwise method asks for a _basic_ set of covariates, $X_b$, which will always be included in the specification and an additional set of covariates, $X_t$, that should be tested for inclusion. The key characteristic of these covariates is that they are known not to be affected by the treatment. Then, the algorithm tests for the interactions and quadratic terms of variables in $X^∗$, the set of included variables. All tests are based on likelihood ratio statistics and thresholds in terms of these statistics for inclusion (see Appendix A of @Imbens2015b for details).
 
-```{r sw-est}
-#' Drop rows with NA
-dt <- dt[complete.cases(dt)]
+```{r sw-est, cache=TRUE}
 #' Basic covariates
 xb <- c("age", "age_2", "female", "race", "marital_status", 
-        "education", "class_of_worker")
+        "veteran", "education", "class_of_worker")
 #' Test covariates
-xt <- c("worked_last_year", "private_health_insurance", "medicaid")
+xt <- c("private_health_insurance", "medicaid")
 #' TEST ONLY: Select a random sample of full data for quick results
-set.seed(1234)
-ds <- dt[sample(.N, 1000)]
+# set.seed(1234)
+# ds <- dt[sample(.N, 2000)]
 ir_tic <- Sys.time()
-ir_form <- ir_stepwise("union", xb, xt, data = ds)
+ir_form <- ir_stepwise("union", xb, xt, data = dt)
 ps_ir <- feglm(as.formula(ir_form$formula), family = "binomial", 
-               data = ds[, -c("earnings")])
-ir_proc_time <- Sys.time() - ir_tic
+               data = dt[, -c("earnings")])
+ir_proc_time <- round(Sys.time() - ir_tic, 2)
 attr(terms(ps_ir), "term.labels")
 ```
 
@@ -326,8 +383,8 @@ _Lasso Selection_
 #' Model selection via Lasso 
 lasso_tic <- Sys.time()
 ps_lasso <- rlassologit(union~(.)^2, 
-                        data = ds[, c("union", ..xb, ..xt)])
-lasso_proc_time <- Sys.time() - lasso_tic
+                        data = dt[, c("union", ..xb, ..xt)])
+lasso_proc_time <- round(Sys.time() - lasso_tic, 2)
 names(coef(ps_lasso))[ps_lasso$index]
 ```
 
@@ -338,42 +395,138 @@ Finally, the third model for estimating the propensity score was a _full_ logit 
 fml <- paste0("union~(", paste(c(xb, xt), collapse = "+"), ")^2")
 full_tic <- Sys.time()
 ps_full <- feglm(as.formula(fml), family = "binomial",
-                data = ds[, c("union", ..xb, ..xt)])
-full_proc_time <- Sys.time() - full_tic
+                data = dt[, c("union", ..xb, ..xt)])
+full_proc_time <- round(Sys.time() - full_tic, 2)
 attr(terms(ps_full), "term.labels")
 ```
 
 ## Assessing overlap
 
 ```{r ds}
-ds[, `:=`(
+dt[, `:=`(
   ir_ps = predict(ps_ir),
   lasso_ps = predict(ps_lasso),
   full_ps = predict(ps_full)
 )]
 
-cbind(stat = rep(c("Min", "Max", "Mean"), 2), 
-      ds[, by = union, 
-         lapply(.SD, function(x){c(min(x), max(x), mean(x))}), 
-         .SDcols = patterns("_ps")])
+dt_models <- melt(dt, 
+                       measure.vars = c("ir_ps", "lasso_ps", "full_ps"),
+                       variable.name = "model",
+                       value.name = "ps")
+dt_models[, by = .(union, model),
+               .(min = min(ps),
+                 max = max(ps),
+                 mean = mean(ps))
+]
 ```
 
 ```{r ds-plot}
-ds_long <- melt(ds, id.vars = "union",
-                measure.vars = c("ir_ps", "lasso_ps", "full_ps"),
-                variable.name = "model",
-                value.name = "ps")
-
-ggplot(ds_long, aes(ps)) +
+model_labels <- c(ir_ps = sprintf("Imbens-Rubin %s %s.",
+                                  ir_proc_time, 
+                                  attr(ir_proc_time, "units")), 
+                  lasso_ps = sprintf("Lasso %s %s.", 
+                                     lasso_proc_time, 
+                                     attr(lasso_proc_time, "units")), 
+                  full_ps = sprintf("Full %s %s.", 
+                                    full_proc_time,
+                                    attr(full_proc_time, "units")))
+ggplot(dt_models, aes(ps)) +
   geom_histogram(aes(y = stat(density)), color = "White", bins = 50) +
   facet_grid(union~model, 
              labeller = labeller(union = c(`0` = "Not Union", 
                                            `1` = "Union"),
-                                 model = c(ir_ps = "Imbens-Rubin", 
-                                           lasso_ps = "Lasso", 
-                                           full_ps = "Full"))) +
+                                 model = model_labels)) +
   labs(x = "Propensity score") +
   theme_light()
+```
+
+**INSERT THE BLOCKING ALGO HERE**
+
+```{r blocking-fun}
+#' Function that subdivides a given propensity score vector in subblocks
+#' treat = vector with treatment assignments
+#' ps = vector with propensity scores
+#' K = how many covariates will we want to test/use in bias correction of 
+#' estimates later on? 
+#' t.max = threshold for tstat in making a further subdivide 
+#' trim = should we discard extreme observations so there is overlap?
+#' Author: Luis Alvarez
+#' Modifications: Rafael F. Bressan
+ps_blocks <- function(treat, ps, K, t.max = 1.96,  trim = FALSE)
+{
+  # Linearized propensity score function
+  lps <- function(ps) {
+    log(ps/(1 - ps))
+  }
+  
+  if (trim) {
+    b0 = min(ps[treat == 1])
+    b1 = max(ps[treat == 0])
+  } else
+  {
+    b0 = 0
+    b1 = 1
+  }
+  b_vec = c(b0, b1)
+  while (TRUE)
+  {
+    J <- length(b_vec) - 1
+    b_vec_new <- do.call(c, lapply(1:J, function(j){
+      sample <- (b_vec[j] <= ps) & (ps < b_vec[j + 1])
+      
+      ps.treat <- lps(ps[sample & treat == 1])
+      ps.control <- lps(ps[sample & treat == 0])
+      
+      #print(length(ps.control))
+      #print(length(ps.treat))
+      
+      t.test.pass <- tryCatch(
+        {abs(t.test(ps.control, ps.treat)$statistic) > t.max}, 
+        error = function(e){return(FALSE)}
+        )
+      
+      med.val = median(c(ps.treat, ps.control))
+      
+      Nt.below = sum(ps.treat < med.val)
+      Nt.above = sum(ps.treat >= med.val)
+      Nc.below = sum(ps.control < med.val)
+      Nc.above = sum(ps.control >= med.val)
+      
+      s.crit <- min(Nt.below, Nt.above, Nc.below, Nc.above) >= max(3, K + 2)
+      
+      if (t.test.pass & s.crit)
+        return(c(b_vec[j], plogis(med.val), b_vec[j + 1])) 
+      else return(c(b_vec[j], b_vec[j + 1]))
+    })) # end of do.call
+    
+    b_vec_new = unique(b_vec_new)
+    
+    #print(length(b_vec_new))
+    if (length(b_vec_new) == length(b_vec))
+      break 
+    else b_vec = b_vec_new
+  } # end of while loop
+  
+  #Constructing blocking variable now
+  block_var = rep(NA, length(treat))
+  
+  for (j in 1:(length(b_vec) - 1))
+    block_var[(b_vec[j] <= ps) & (ps < b_vec[j + 1])] = j
+  
+  return(block_var)
+}
+```
+
+```{r blocking, results = 'asis', warning=FALSE, cache=TRUE}
+dt_models[, by = .(model),
+               block := ps_blocks(union, ps, length(c(xb, xt)), 
+                                  t.max = 2.66,
+                                  trim = TRUE)]
+#' Choosing a specific model
+dt_block <- dt_models[model == "full_ps" & !is.na(block), keyby = block,
+                           .(data = list(.SD))]
+dt_block[, bal_tbl := lapply(data, balance_tbl, treat = "union")]
+lapply(dt_block$bal_tbl, balance_kbl)
 ```
 
 ## Trimming to improve PS balance
@@ -405,14 +558,30 @@ trimming <- function(ps)
 ```
 
 ```{r trim-ds}
-ds_long[, by = model, trim_keep := trimming(ps)]
+dt_models[, by = model, trim_keep := trimming(ps)]
 
-ds_long[(trim_keep), by = .(union, model),
-        .(min = min(ps),
-          max = max(ps),
-          mean = mean(ps))
+dt_models[(trim_keep), by = .(union, model),
+               .(min = min(ps),
+                 max = max(ps),
+                 mean = mean(ps))
 ]
 ```
 
-## Re-weighted Covariate's Balance
+```{r ds-trim-plot}
+ggplot(dt_models[(trim_keep)], aes(ps)) +
+  geom_histogram(aes(y = stat(density)), color = "White", bins = 50) +
+  facet_grid(union~model, 
+             labeller = labeller(union = c(`0` = "Not Union", 
+                                           `1` = "Union"),
+                                 model = model_labels)) +
+  labs(x = "Propensity score",
+       title = "Propensity score distribution after trimming") +
+  theme_light()
+```
 
+```{r trimmed-tbl, message=FALSE}
+dt_trim <- dt_models[(trim_keep) & model == "full_ps"]
+# balance_kbl(balance_tbl(dt_trim, "union"))
+```
+
+# References

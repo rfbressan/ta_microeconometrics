@@ -105,6 +105,14 @@ dt[, .N, by = .(mulher)]
 
 When there is only one expression in `j`, the use of `.N` will return a `data.table`. If you have more than one column being computed in `j`, then you should enclose them in a list. Also, `by` accepts either a list of unquoted column names or **a character vector** of columns names (ideal to use when grouping programmatically). If there is only one group, then a bare name is acceptable as convenience.
 
+Another very useful special symbol is `.SD`. The **Subset of the Data** acronym. It's also helpful to consider the "S" to stand for "Selfsame" or "Self-reference". Special symbol `.SD` is in its most basic guise a reflexive reference to the data.table itself. 
+
+Often, we'd like to perform some operation on our data at the group level. When we specify `by =` (or `keyby =`), what happens when `data.table` processes `j` is that your data.table is split into many component sub-data.tables (`.SD`), each of which corresponds to a single value of your `by` variable:
+
+```{r sd, echo=FALSE}
+knitr::include_graphics("Figs/SD.png")
+```
+
 ## Different aggregations to different columns
 
 Now let's do some aggregations. What are the number of children and their average score by each school? Return a `data.table` with columns named `obs` and `avg`.
