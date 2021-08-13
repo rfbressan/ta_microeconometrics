@@ -51,13 +51,13 @@ The general form of `data.table` syntax is **DT[i, j, by]** where we can read it
 We can select only a handful of DT's rows according to some criteria. Let's choose only the observations of girls of age 10 or more. Notice we do not need to quote column's name inside `data.table`'s brackets when selecting them in either `i` or `j`.
 
 ```{r row-subset}
-dt[mulher == 1 & idade > 10]
+dt[mulher == 1 & idade >= 10]
 ```
 
 You can also select the n-first rows with a numeric index. The resulting `data.table` can then be **chained** to perform other operations, for example, reordering.
 
 ```{r reorder}
-dt[1:5][order(idade)]
+dt[1:5][order(-idade)]
 ```
 
 ## Selecting columns in `j`
@@ -88,7 +88,8 @@ dt[, logico*idade][1:5]
 What is happening here? Notice that `j` is **not** returning a list, but instead a product of two vectors, which is a vector in R. Therefore, our result is not a `data.table` but a vector (i.e. a unidimensional array). We can return a `data.table` just by enclosing the expression with `.()`. Moreover, we can also name this column.
 
 ```{r comp2}
-dt[, .(product = logico*idade)]
+dt[, .(product = logico*idade,
+       sum = logico + idade)]
 ```
 
 Don't mind just yet that we are not returning all other columns in the original `data.table`. When showing the reference semantics of `data.table` we will do that.
@@ -100,7 +101,7 @@ Aggregations are operations in a vector that results in a single value. Some of 
 First let's introduce the special symbol `.N` that holds the number of observations in the current group. It is used to calculate the number of observations in a subsample. How many boys and girls are there in the dataset?
 
 ```{r N}
-dt[, .N, by = .(mulher)]
+dt[, .N, by = list(mulher)]
 ```
 
 When there is only one expression in `j`, the use of `.N` will return a `data.table`. If you have more than one column being computed in `j`, then you should enclose them in a list. Also, `by` accepts either a list of unquoted column names or **a character vector** of columns names (ideal to use when grouping programmatically). If there is only one group, then a bare name is acceptable as convenience.
@@ -151,26 +152,39 @@ dt[, c(lapply(.SD, mean), min = min(idade), max = max(idade)), by = escola,
 If your objective is to do multiple aggregations to the same column(s) the use of the `sapply` function is very flexible in a way you can define your own **custom function** to apply on `.SD` columns. That way you can define a summary statistics function that returns the number of observations, the mean and standard deviation of selected columns for example. Let's do that and compute descriptive statistics, grouped by school, on the student's age and exam.
 
 ```{r custom1}
+suffix <- c("count", "mean", "sd")
 dt[, by = escola,
-   sapply(.SD, function(x){
-     list(.N, mean(x), sd(x))
-   }),
+   setNames(
+      sapply(.SD, function(x){
+         list(.N, mean(x), sd(x))
+      }),
+      c(paste(rep(names(.SD), each = length(suffix)),
+                       suffix, 
+                       sep = "_")
+      )
+   ),
    .SDcols = c("idade", "logico")][1:5]
 ```
 
 Here, the `sapply` function returns a matrix where the rows contain the functions' results and the columns are the variables you passed on `.SDcols`, for each group. `data.table` will justapose all the results for each column in order and then return. Mind that the custom function _must_ return a list. The columns of the resulting `data.table` will have default names and you can always use `setnames` to rename them. Also notice that **`j` and `by` can be interchanged** inside the brackets. This is useful when `j` is a long expression and you want to write it in several lines of code.
 
+> UPDATE: Notice we have embraced the the sapply expression in the setNames function. That way we can rename the list returned by sapply and the resulting data.table will have the desired column names.
+
 We could also have done the following:
 
 ```{r custom2}
+cols <- c("idade", "logico")
+suffix <- c("_mean", "_sd")
 dt[, by = escola,
-   c(.N,
-     lapply(.SD, mean),
-     lapply(.SD, sd)),
-   .SDcols = c("idade", "logico")][1:5]
+   setNames(
+      c(.N, lapply(.SD, mean), lapply(.SD, sd)),
+      c("obs", paste0(rep(names(.SD), length(suffix)),
+                      rep(suffix, each = length(cols)))
+      )),
+   .SDcols = cols][1:5]
 ```
 
-combinning results for each aggregation. Beware of the column's order and repeated names. This is ok for a handful of operations but can become quite repetitive if you have many more aggregations to perform, and you will have to rename (and possibly reorder) your columns anyway.
+combinning results for each aggregation. Beware of the column's order and repeated names (if `setNames` is not used). This is ok for a handful of operations but can become quite repetitive if you have many more aggregations to perform, and you will have to ~~rename~~ (and possibly reorder) your columns anyway.
 
 
 Whenever you perform calculations in a `data.table` where _the reference semantics is not used_ you should **assign** your results to another local variable. For example, up until now, all our operations did not changed the contents of `dt`! If you want to further work down an intermediary result like the last one you should save this to another `data.table` variable with the `<-` operator.
@@ -256,7 +270,6 @@ dt[, by = escola,
    .SDcols = cols]
 dt[1:5]
 ```
-
 
 <!-- # Programming with `data.table` -->
 

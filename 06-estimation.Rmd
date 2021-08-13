@@ -16,22 +16,119 @@ bibliography: "references.bib"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r inst, message=FALSE}
+library(data.table)
+library(fixest)
+library(kableExtra)
+library(modelsummary)
+library(hdm)
+library(ggplot2)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r dt-utils, echo=FALSE}
+source("dt_utils.R")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r read, cache=TRUE}
+dt <- fread("Data/cps_union_data.csv")
+#' Cleaning.
+dt[, c("V1", "CPSID", "CPSIDP", "public_housing", "employed") := NULL]
+dt[, `:=`(
+  marital_status = ifelse(marital_status %in% c(1, 2), 1, 0),
+  race = ifelse(race == 1, 1, 0),
+  age_2 = age^2
+)]
+cat_cols <- c("class_of_worker", "class_of_worker_last_year")
+dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
+dt <- dt[complete.cases(dt)]
+```
+
+# Blocking
+
+```{r blocking-fun}
+#' Function that subdivides a given propensity score vector in subblocks
+#' treat = vector with treatment assignments
+#' ps = vector with propensity scores
+#' K = how many covariates will we want to test/use in bias correction of 
+#' estimates later on? 
+#' t.max = threshold for tstat in making a further subdivide 
+#' trim = should we discard extreme observations so there is overlap?
+#' Author: Luis Alvarez
+#' Modifications: Rafael F. Bressan
+ps_blocks <- function(treat, ps, K, t.max = 1.96,  trim = FALSE)
+{
+  # Linearized propensity score function
+  lps <- function(ps) {
+    log(ps/(1 - ps))
+  }
+  
+  if (trim) {
+    b0 = min(ps[treat == 1])
+    b1 = max(ps[treat == 0])
+  } else
+  {
+    b0 = 0
+    b1 = 1
+  }
+  b_vec = c(b0, b1)
+  while (TRUE)
+  {
+    J <- length(b_vec) - 1
+    b_vec_new <- do.call(c, lapply(1:J, function(j){
+      sample <- (b_vec[j] <= ps) & (ps < b_vec[j + 1])
+      
+      ps.treat <- lps(ps[sample & treat == 1])
+      ps.control <- lps(ps[sample & treat == 0])
+      
+      #print(length(ps.control))
+      #print(length(ps.treat))
+      
+      t.test.pass <- tryCatch(
+        {abs(t.test(ps.control, ps.treat)$statistic) > t.max}, 
+        error = function(e){return(FALSE)}
+        )
+      
+      med.val = median(c(ps.treat, ps.control))
+      
+      Nt.below = sum(ps.treat < med.val)
+      Nt.above = sum(ps.treat >= med.val)
+      Nc.below = sum(ps.control < med.val)
+      Nc.above = sum(ps.control >= med.val)
+      
+      s.crit <- min(Nt.below, Nt.above, Nc.below, Nc.above) >= max(3, K + 2)
+      
+      if (t.test.pass & s.crit)
+        return(c(b_vec[j], plogis(med.val), b_vec[j + 1])) 
+      else return(c(b_vec[j], b_vec[j + 1]))
+    })) # end of do.call
+    
+    b_vec_new = unique(b_vec_new)
+    
+    #print(length(b_vec_new))
+    if (length(b_vec_new) == length(b_vec))
+      break 
+    else b_vec = b_vec_new
+  } # end of while loop
+  
+  #Constructing blocking variable now
+  block_var = rep(NA, length(treat))
+  
+  for (j in 1:(length(b_vec) - 1))
+    block_var[(b_vec[j] <= ps) & (ps < b_vec[j + 1])] = j
+  
+  return(block_var)
+}
+```
+
+```{r blocking, results = 'asis', warning=FALSE, cache=TRUE}
+dt_models[, by = .(model),
+               block := ps_blocks(union, ps, length(c(xb, xt)), 
+                                  t.max = 2.66,
+                                  trim = TRUE)]
+#' Choosing a specific model
+dt_block <- dt_models[model == "full_ps" & !is.na(block), keyby = block,
+                           .(data = list(.SD))]
+dt_block[, bal_tbl := lapply(data, balance_tbl, treat = "union")]
+lapply(dt_block$bal_tbl, balance_kbl)
+```
+

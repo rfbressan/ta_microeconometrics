@@ -68,15 +68,24 @@ for all $\mathbf{W}, \mathbf{X}, \mathbf{Y}(0), \mathbf{Y}(1), \mathbf{Y}^{\prim
 
 The unconfounded assumption is also known as the conditional independence assumption -- CIA, [@Angrist2008]. Thus, if the assignment mechanism is uncounfounded and individualistic the probability of assignment is the _individual_ propensity score. Also, given individualistic assignment, a mechanism that is both probabilistic and uncounfounded is referred as _strongly ignorable treatment assignment_. 
 
+
+@Imbens2015b lays out an overall strategy for flexibly and robustly
+estimating the average effect of the treatment. The strategy consists of two,
+sometimes three, distinct stages to estimate the average treatment effect from observational studies. The first stage is referred as the _design stage_ where the full sample is trimmed to improve overlap of covariates. In the second stage, a _supplementary analysis_ of the unconfoundedness assumption is assessed. Finally, the third stage is the _analysis stage_, where the estimator of choice is applied to the trimmed data set and the average effect is thus estimated. 
+
+# Design Stage
+
+In this stage **do not use the outcome data** and focus solely on the treatment indicators and covariates, $(X,W)$. This stage does not involve the outcome data and as a result, this analysis cannot be "contaminated" by knowledge of estimated outcome distributions, or by preferences, conscious or unconcious, for
+particular results.
+
 ## Initial Covariate's Balance
 
 We will use once again the "schools" dataset.
 
 ```{r read, cache=TRUE}
 dt <- fread("Data/cps_union_data.csv")
-#' Cleaning
-dt <- dt[!is.na(earnings)] # Keep only not NA in earnings
-dt[, c("V1", "CPSID", "CPSIDP", "public_housing", "employed") := NULL]
+#' Cleaning. Do not use the outcome!
+dt[, c("earnings", "V1", "CPSID", "CPSIDP", "public_housing", "employed") := NULL]
 dt[, `:=`(
   marital_status = ifelse(marital_status %in% c(1, 2), 1, 0),
   race = ifelse(race == 1, 1, 0),
@@ -92,7 +101,7 @@ datasummary_balance(~union, data = dt,
                     title =  "Descriptive statistics by treatment group for an observational study.")
 ```
 
-@Imbens2015 point that the goal is, at least at this point, to assess whether the differences between the two sample distributions are so large that simple adjustment methods are unlikely to remove biases in estimated treatment/control average differences. So, they suggest reporting the normalized differences:
+@Imbens2015 point that the goal is, at least at this point, to assess whether the differences between the two sample distributions are so large that simple adjustment methods are unlikely to remove biases in estimated treatment/control average differences. So, they suggest reporting the **normalized differences**:
 
 \begin{equation} 
 \hat\Delta_{ct}= \frac{\bar X_t - \bar X_c}{\sqrt{(s^2_t+s^2_c)/2}}
@@ -102,7 +111,7 @@ where $\bar X_t$ and $\bar X_c$ denote the sample means for treatment and contro
 
 [^ttest]: I refer you to the following reading: [Should we require balance t-tests of baseline observables in randomized experiments?](https://blogs.worldbank.org/impactevaluations/should-we-require-balance-t-tests-baseline-observables-randomized-experiments)
 
-We may also wish to compare measures of dispersion in the two distributions. This can be done with the logarithm of the ratio of standard deviations, which is invariant to scale:
+We may also wish to compare measures of dispersion in the two distributions. This can be done with the **logarithm of the ratio of standard deviations**, which is invariant to scale:
 
 $$\hat\Gamma_{ct}=\ln(s_t)-\ln(s_c)$$
 
@@ -189,7 +198,14 @@ setcolorder(bal_dt, c(vari, treat, cont))
 And now we can present the normalized difference alongside to other metrics in the balance table.
 
 
-```{r norm-bal, results = "asis"}
+```{r norm-tbl, results = "asis"}
+Nt <- bal_dt[1, N_1]
+Nc <- bal_dt[1, N_0]
+t_title <- sprintf("Treatment ($N_t = %s$)", Nt)
+c_title <- sprintf("Control ($N_c = %s$)", Nc)
+kbl_head <- c(1, 2, 2, 5)
+names(kbl_head) <- c(" ", t_title, c_title, "Overlap Measures")
+
 kbl(bal_dt[, -c("N_1", "N_0", "diff_mean", "std_err")], 
     digits = 2,
     col.names = c("Variable", "Mean", "Std.Dev",
@@ -197,10 +213,7 @@ kbl(bal_dt[, -c("N_1", "N_0", "diff_mean", "std_err")],
                   "t-stat", "Norm. Diff.", "Log Ratio", "$\\pi_c^{0.05}$", "$\\pi_t^{0.05}$"),
     escape = FALSE) |> 
   kable_classic(full_width = FALSE) |> 
-  add_header_above(c(" " = 1,
-                     "Treatment" = 2,
-                     "Control" = 2,
-                     "Overlap Measures" = 5))
+  add_header_above(header = kbl_head)
 ```
 
 Since we have multiple covariates, it is also useful to understand their joint distribution. In this case we want to have a single measure of the difference between the treatment arms distributions. Let $K$ be the number of covariates, the
@@ -233,9 +246,9 @@ mahalo
 ```
 
 
-# Propensity Score
+## Propensity Score
 
-Here we focus on the statistical problem of estimating the **conditional probability of receiving the treatment** given the observed covariates. The end goal is to obtain estimates of the propensity score that balance the covariates between treated and control subsamples.
+Here we focus on the statistical problem of estimating the **conditional probability of receiving the treatment** given the observed covariates. The end goal is to obtain estimates of the propensity score that balance the covariates between treated and control subsamples. The propensity score in the _design stage_ is useful to trim the data set in order to improve covariate's balance.
 
 We have seen in class that the propensity score is a balancing score and those have an important property: treatment assignment is unconfounded when conditioned on a balancing score:
 
@@ -253,7 +266,7 @@ knitr::include_graphics("Figs/binary_outcomes.png")
 
 We will proceed to the following section estimating logit models.
 
-## Covariate's selection
+### Covariate's selection for PS estimation
 
 Before estimating the propensity score, the researcher must specify wich covariates and their transformations enter the vector $X$. It may not be sufficient to include them only linearly, but also, we do not want to be too flexible in the specification and risk to incur in overfitting, which will spoil the overlap assumption.
 
@@ -374,7 +387,7 @@ ir_form <- ir_stepwise("union", xb, xt, data = dt)
 ps_ir <- feglm(as.formula(ir_form$formula), family = "binomial", 
                data = dt[, -c("earnings")])
 ir_proc_time <- round(Sys.time() - ir_tic, 2)
-attr(terms(ps_ir), "term.labels")
+# attr(terms(ps_ir), "term.labels")
 ```
 
 _Lasso Selection_
@@ -385,7 +398,7 @@ lasso_tic <- Sys.time()
 ps_lasso <- rlassologit(union~(.)^2, 
                         data = dt[, c("union", ..xb, ..xt)])
 lasso_proc_time <- round(Sys.time() - lasso_tic, 2)
-names(coef(ps_lasso))[ps_lasso$index]
+# names(coef(ps_lasso))[ps_lasso$index]
 ```
 
 Finally, the third model for estimating the propensity score was a _full_ logit model with all meaningful variables and their interactions up to second order.
@@ -397,12 +410,12 @@ full_tic <- Sys.time()
 ps_full <- feglm(as.formula(fml), family = "binomial",
                 data = dt[, c("union", ..xb, ..xt)])
 full_proc_time <- round(Sys.time() - full_tic, 2)
-attr(terms(ps_full), "term.labels")
+# attr(terms(ps_full), "term.labels")
 ```
 
-## Assessing overlap
+## Assessing PS Overlap
 
-```{r ds}
+```{r ds, cache=TRUE}
 dt[, `:=`(
   ir_ps = predict(ps_ir),
   lasso_ps = predict(ps_lasso),
@@ -413,14 +426,20 @@ dt_models <- melt(dt,
                        measure.vars = c("ir_ps", "lasso_ps", "full_ps"),
                        variable.name = "model",
                        value.name = "ps")
-dt_models[, by = .(union, model),
+ol_tbl <- dcast(dt_models[, by = .(union, model),
                .(min = min(ps),
                  max = max(ps),
-                 mean = mean(ps))
-]
+                 mean = mean(ps))],
+      model~union, value.var = c("min", "mean", "max")
+)
+# Reorder the columns by their index
+treat <- grep("_1", colnames(ol_tbl))
+cont <- grep("_0", colnames(ol_tbl))
+setcolorder(ol_tbl, c(1, treat, cont))
+ol_tbl
 ```
 
-```{r ds-plot}
+```{r ds-plot, cache=TRUE}
 model_labels <- c(ir_ps = sprintf("Imbens-Rubin %s %s.",
                                   ir_proc_time, 
                                   attr(ir_proc_time, "units")), 
@@ -438,95 +457,6 @@ ggplot(dt_models, aes(ps)) +
                                  model = model_labels)) +
   labs(x = "Propensity score") +
   theme_light()
-```
-
-**INSERT THE BLOCKING ALGO HERE**
-
-```{r blocking-fun}
-#' Function that subdivides a given propensity score vector in subblocks
-#' treat = vector with treatment assignments
-#' ps = vector with propensity scores
-#' K = how many covariates will we want to test/use in bias correction of 
-#' estimates later on? 
-#' t.max = threshold for tstat in making a further subdivide 
-#' trim = should we discard extreme observations so there is overlap?
-#' Author: Luis Alvarez
-#' Modifications: Rafael F. Bressan
-ps_blocks <- function(treat, ps, K, t.max = 1.96,  trim = FALSE)
-{
-  # Linearized propensity score function
-  lps <- function(ps) {
-    log(ps/(1 - ps))
-  }
-  
-  if (trim) {
-    b0 = min(ps[treat == 1])
-    b1 = max(ps[treat == 0])
-  } else
-  {
-    b0 = 0
-    b1 = 1
-  }
-  b_vec = c(b0, b1)
-  while (TRUE)
-  {
-    J <- length(b_vec) - 1
-    b_vec_new <- do.call(c, lapply(1:J, function(j){
-      sample <- (b_vec[j] <= ps) & (ps < b_vec[j + 1])
-      
-      ps.treat <- lps(ps[sample & treat == 1])
-      ps.control <- lps(ps[sample & treat == 0])
-      
-      #print(length(ps.control))
-      #print(length(ps.treat))
-      
-      t.test.pass <- tryCatch(
-        {abs(t.test(ps.control, ps.treat)$statistic) > t.max}, 
-        error = function(e){return(FALSE)}
-        )
-      
-      med.val = median(c(ps.treat, ps.control))
-      
-      Nt.below = sum(ps.treat < med.val)
-      Nt.above = sum(ps.treat >= med.val)
-      Nc.below = sum(ps.control < med.val)
-      Nc.above = sum(ps.control >= med.val)
-      
-      s.crit <- min(Nt.below, Nt.above, Nc.below, Nc.above) >= max(3, K + 2)
-      
-      if (t.test.pass & s.crit)
-        return(c(b_vec[j], plogis(med.val), b_vec[j + 1])) 
-      else return(c(b_vec[j], b_vec[j + 1]))
-    })) # end of do.call
-    
-    b_vec_new = unique(b_vec_new)
-    
-    #print(length(b_vec_new))
-    if (length(b_vec_new) == length(b_vec))
-      break 
-    else b_vec = b_vec_new
-  } # end of while loop
-  
-  #Constructing blocking variable now
-  block_var = rep(NA, length(treat))
-  
-  for (j in 1:(length(b_vec) - 1))
-    block_var[(b_vec[j] <= ps) & (ps < b_vec[j + 1])] = j
-  
-  return(block_var)
-}
-```
-
-```{r blocking, results = 'asis', warning=FALSE, cache=TRUE}
-dt_models[, by = .(model),
-               block := ps_blocks(union, ps, length(c(xb, xt)), 
-                                  t.max = 2.66,
-                                  trim = TRUE)]
-#' Choosing a specific model
-dt_block <- dt_models[model == "full_ps" & !is.na(block), keyby = block,
-                           .(data = list(.SD))]
-dt_block[, bal_tbl := lapply(data, balance_tbl, treat = "union")]
-lapply(dt_block$bal_tbl, balance_kbl)
 ```
 
 ## Trimming to improve PS balance
@@ -551,8 +481,11 @@ trimming <- function(ps)
     g <- uniroot(value_fun, c(min(inv.vec), max(inv.vec)))
     
     alpha.trim <- 1/2 - sqrt(1/4 - 1/g$root)
-    print(paste("Trimming threshold alpha is ", alpha.trim))
-    return(ps <= 1 - alpha.trim &  ps >= alpha.trim)
+    keep_vec <- ps <= 1 - alpha.trim & ps >= alpha.trim
+    trim_obs <- length(ps) - sum(keep_vec)
+    print(sprintf("Trimming threshold alpha is %s. Trimmed %s observations.",
+                  alpha.trim, trim_obs))
+    return(keep_vec)
   }
 }
 ```
@@ -560,11 +493,17 @@ trimming <- function(ps)
 ```{r trim-ds}
 dt_models[, by = model, trim_keep := trimming(ps)]
 
-dt_models[(trim_keep), by = .(union, model),
+ol_tbl <- dcast(dt_models[(trim_keep), by = .(union, model),
                .(min = min(ps),
                  max = max(ps),
-                 mean = mean(ps))
-]
+                 mean = mean(ps))],
+      model~union, value.var = c("min", "mean", "max")
+)
+# Reorder the columns by their index
+treat <- grep("_1", colnames(ol_tbl))
+cont <- grep("_0", colnames(ol_tbl))
+setcolorder(ol_tbl, c(1, treat, cont))
+ol_tbl
 ```
 
 ```{r ds-trim-plot}
@@ -581,7 +520,35 @@ ggplot(dt_models[(trim_keep)], aes(ps)) +
 
 ```{r trimmed-tbl, message=FALSE}
 dt_trim <- dt_models[(trim_keep) & model == "full_ps"]
-# balance_kbl(balance_tbl(dt_trim, "union"))
+balance_kbl(balance_tbl(dt_trim, "union"))
 ```
+
+# Assessing Unconfoundedness
+
+In the second stage, analyses are carried out to assess the plausibility of unconfoundedness. Again it should be stressed that these analyses can be carried out without access to the outcome data. The strategy relies on splitting the set of covariates into a vector of pseudo-outcome, $X_p$ and a matrix of remaining covariates, $\mathbf{X}_r$. We then estimate the effect on the pseudo-sample $(X_p, W, X_r)$. This estimates the "pseudo" causal effect which we know _a priori_ to be zero. If that is indeed the case, we take it as evidence that the unconfoundedness assumption is valid.
+
+We chose the variable `wage_income_last_year` to be our pseudo-outcome[^wage]. Since this variable was not part of our propensity score model before, we are ready to estimate our pseudo-effect. We will use the Horvitz-Thompson (also known as Inverse Probability Weight - IPW) estimator _just for the sake of demonstration_. Ideally one should use the same estimator intended for the real outcome, but we will cover other estimators like Matching, Subclassification and Doubly-Robust only in the next session.
+
+[^wage]: Keep in mind this is a "toy" regression, an overly simplistic example. It may be argued that past wages are related to current union membership. The idea of a pseudo-outcome is one that is not economically (and casually) related to the treatment.
+
+Hence, we already have a trimmed dataset containing the pseudo-outcome, treatment status and covariates, $(X_p, W, X_r)$ to run the regression:
+
+$$X_{p,i}=\alpha_i+\beta W_i+\gamma\prime X_{r,i}+\varepsilon_i$$
+
+```{r pseudo-reg}
+# Creates the weights
+dt_trim[, weight := union/ps + (1 - union)/(1 - ps)]
+reg1 <- feols(wage_income_last_year~union, data = dt_trim)
+reg2 <- feols(wage_income_last_year~union, data = dt_trim, weights = ~weight)
+reg3 <- feols(wage_income_last_year~union+age+age_2+education+female, 
+              data = dt_trim, weights = ~weight)
+
+setFixest_dict(c(wage_income_last_year = "Wage_{t-1}"))
+etable(list(reg1, reg2, reg3), se = "hetero", sdBelow = TRUE)
+```
+
+Ignore for the moment the fact that `union` and `education` may be endogenous to wages and we have our evidence of unconfoudedness.
+
+As a final note, @Imbens2015 let it clear that the covariates to be included in a propensity score model and as controls in any estimation should be **pre-treatment** variables not affected by treatment designation. If regressors in a causal model are affected by treatment, those are called **bad controls** and we should avoid including them in a regression.
 
 # References
