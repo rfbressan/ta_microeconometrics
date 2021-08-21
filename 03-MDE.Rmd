@@ -15,7 +15,9 @@ bibliography: "references.bib"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-The minimum detectable effect - MDE - in an experiment design is related to the power of that design, that is, the probability that, for a given effect size and statistical significance level, you will be able to reject the null hypothesis of zero effect. Everything else constant, higher sample sizes improve power, thus, reducing the MDE.
+The minimum detectable effect[^ref] - MDE - in an experiment design is related to the power of that design, that is, the probability that, for a given effect size and statistical significance level, you will be able to reject the null hypothesis of zero effect. Everything else constant, higher sample sizes improve power, thus, reducing the MDE.
+
+[^ref]: A starters reference on the subject is @Duflo2007.
 
 Before conducting the experiment itself, you can use survey data to assess the design's power. In this class we will consider a setting where we have baseline student-level data on a sample of several schools and would like to randomize a treatment at the school level. We will also analyse the impact of including student-level covariates in power. Since treatment is assigned at the school-level, standard errors should account for clustering. We start by loading our known `escolas.csv` dataset.
 
@@ -78,16 +80,19 @@ dt <- dt[!is.na(logico)]
 summary(dt)
 ```
 
+We have to _simulate_ the treatment assignment designed to happen in the experiment. In this case this will be a random draw from $\{0, 1\}$ at student level. For each treatment effect **imposed** we simulate a large number of assignments and derive the proportion of null hypothesis rejections (i.e. the power) for that effect.
+
 ```{r rand, warning=FALSE, cache=TRUE}
 #' Include the effect in y variable for those observations in the treatment
 #' group
 set.seed(123456)
-eff_grid <- seq(0, 0.5, by = 0.05)
-reps <- 1000
+eff_grid <- seq(0, 0.5, by = 0.05) # Effect grid
+reps <- 100
 alpha <- 0.05
 dt2 <- copy(dt)
 #' Creates a data.table to hold all replications and effects
 mde_dt <- CJ(effect = eff_grid, replication = seq_len(reps))
+#' For each row, draw a treatment assignment vector, create an "artificial" outcome y and run regressions. Save the rejections
 mde_dt[, rejections := lapply(effect, function(x){
   dt2[, treat := rbinom(.N, 1, prob = 0.5)]
   dt2[, y := logico + x*treat]
@@ -96,6 +101,7 @@ mde_dt[, rejections := lapply(effect, function(x){
                lean = TRUE)
   lapply(model, function(x) pvalue(x)["treat"] < alpha)
 })]
+#' Unlist the rejections for each model estimated
 mde_dt[, by = .(effect, replication), 
        c("Model1","Model2","Model3") := rejections[[1]]]
 # Power table. Columns "Model" present the power for a given effect size
@@ -137,10 +143,11 @@ set.seed(123456)
 dt2 <- copy(dt)
 mde2_dt <- CJ(effect = eff_grid, replication = seq_len(reps))
 mde2_dt[, rejections := lapply(effect, function(x){
+  #' Treatment assignment made by school!
   dt2[, by = escola, treat := rbinom(1, 1, prob = 0.5)]
   dt2[, y := logico + x*treat]
   model <- feols(y~treat+csw0(idade, mulher), data = dt2, 
-               cluster = ~escola, 
+               cluster = ~escola, # Cluster the errors by school
                lean = TRUE)
   lapply(model, function(x) pvalue(x)["treat"] < alpha)
 })]
@@ -167,20 +174,22 @@ ggplot(table2, aes(effect, Model1)) +
   theme_light()
 ```
 
-Suppose now we want to compute the MDE for a **specified power** and significance level from the baseline data we were given. Basically, we need to invert the power function. We don't actually have data on the treatment, remember we are dealing with survey data _prior_ to any intervention, such that we still _simulate_ treatment assignment and compute the power, although now we have a goal value to pursue. Once we get to that value, then we will know what is the minimum effect size that achieves the desired power. 
+Suppose now we want to compute the MDE for a **specified power** and significance level from the baseline data we were given. Basically, we need to invert the power function. We don't actually have data on the treatment, remember we are dealing with survey data _prior_ to any intervention, such that we still _simulate_ treatment assignment and compute the power, although, now we have a goal value to pursue. Once we get to that value, then we will know what is the minimum effect size that achieves the desired power. 
 
 ```{r mde, warning=FALSE, cache=TRUE}
 set.seed(123456)
 kappa <- 0.8
 alpha <- 0.05
-reps <- 100
+reps <- 50 # High values may take longer
 
 power_diff <- function(beta, kappa = 0.8, alpha = 0.05, reps = 10){
-  dt2 <- copy(dt)
+  dt2 <- copy(dt) # Copying from global environment
   mde_dt <- CJ(effect = beta, replication = seq_len(reps))
+  # sapply because return single value
   mde_dt[, rejections := sapply(effect, function(x){
     dt2[, by = escola, treat := rbinom(1, 1, prob = 0.5)]
     dt2[, y := logico + x*treat]
+    # Only one (simple) model
     model <- feols(y~treat, data = dt2, 
                    cluster = ~escola, 
                    lean = TRUE)
@@ -200,12 +209,24 @@ But what if this MDE is not enough? By how much should we increase the sample si
 
 $$
 \begin{equation}
-\frac{MDE_{pilot}}{MDE}=\sqrt{\frac{N}{N_{pilot}}}
+MDE=MDE_{pilot}\sqrt{\frac{N_{pilot}}{N}}
 \end{equation}
 $$
 
-Once we have calculated $MDE_{pilot}$, for a given power and significance level, it is easy to estimate the minimun sample size required in order to reach a goal MDE. Suppose we want to halve the $MDE_{pilot}$, then, keeping constant power and significance, we should quadruple the sample size.
+Once we have calculated $MDE_{pilot}$, for a given power and significance level, it is easy to estimate the minimum sample size required in order to reach a goal MDE. Suppose we want to halve the $MDE_{pilot}$, then, keeping constant power and significance, we should quadruple the sample size.
+
+# `paramtest` R package
+
+As a final note, I refer your to check the `paramtest` package to make simulations like the ones we have done here. The package is supposed to:
+
+> _"Run simulations or other functions while easily varying parameters from one iteration to the next. Some common use cases would be grid search for machine learning algorithms, running sets of simulations (e.g., estimating statistical power for complex models), or bootstrapping under various conditions."_
+
+Check the companion script provided, `power.R` and the package's documentation and vignette at the link bellow.
 
 # Useful Links
 
 [Statistical Power for Randomized Health Experiments](https://vimeo.com/347632997)
+
+[paramtest R package](https://cran.r-project.org/web/packages/paramtest/index.html)
+
+# References

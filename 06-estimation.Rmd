@@ -21,7 +21,7 @@ library(data.table)
 library(fixest)
 library(kableExtra)
 library(modelsummary)
-library(hdm)
+# library(hdm)
 library(ggplot2)
 ```
 
@@ -43,7 +43,27 @@ dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
 dt <- dt[complete.cases(dt)]
 ```
 
-# Blocking
+```{r ps-full}
+#' Basic covariates
+xb <- c("age", "age_2", "female", "race", "marital_status", 
+        "veteran", "education", "class_of_worker")
+#' Test covariates
+xt <- c("private_health_insurance", "medicaid")
+#' Model with full set of covariates!
+fml <- paste0("union~(", paste(c(xb, xt), collapse = "+"), ")^2")
+ps_full <- feglm(as.formula(fml), family = "binomial",
+                data = dt[, c("union", ..xb, ..xt)])
+
+dt[, `:=`(
+  ps = predict(ps_full)
+)]
+```
+
+# Matching
+
+# Subclassification
+
+## Blocks
 
 ```{r blocking-fun}
 #' Function that subdivides a given propensity score vector in subblocks
@@ -121,14 +141,57 @@ ps_blocks <- function(treat, ps, K, t.max = 1.96,  trim = FALSE)
 ```
 
 ```{r blocking, results = 'asis', warning=FALSE, cache=TRUE}
-dt_models[, by = .(model),
-               block := ps_blocks(union, ps, length(c(xb, xt)), 
-                                  t.max = 2.66,
-                                  trim = TRUE)]
-#' Choosing a specific model
-dt_block <- dt_models[model == "full_ps" & !is.na(block), keyby = block,
-                           .(data = list(.SD))]
+dt[, block := ps_blocks(union, ps, length(c(xb, xt)), 
+                        t.max = 2.66,
+                        trim = TRUE)]
+#' Packing data into blocks
+dt_block <- dt[!is.na(block), keyby = block,
+               .(data = list(.SD))]
+#' Balance tables by blocks
 dt_block[, bal_tbl := lapply(data, balance_tbl, treat = "union")]
+#' Check tables
 lapply(dt_block$bal_tbl, balance_kbl)
 ```
 
+# Dobly-Robust
+
+The basic Horvitz-Thompson (IPW) estimator exploits the following two equalities:
+
+
+\begin{equation}
+\mathbb{E}\left[\frac{Y_{i}\cdot W_{i}  }{e\left(X_{i}\right)}\right]=\mathbb{E}\left[Y_{i}(1)\right] \quad \text { and } \quad \mathbb{E}\left[\frac{Y_{i} \cdot\left(1-W_{i}\right) }{1-e\left(X_{i}\right)}\right]=\mathbb{E}\left[Y_{i}(0)\right]
+\end{equation}
+
+Hence, our estimands are given by:
+
+
+\begin{align}
+\tau^{ATE}=\mathbb{E}\left[Y_{i}(1)-Y_{i}(0)\right]&=\mathbb{E}\left[\frac{Y_{i} \cdot W_{i}}{e(X_i)}-\frac{Y_{i} \cdot\left(1-W_{i}\right)}{1-e(X_i)}\right] \\
+\tau^{ATT}=\mathbb{E}\left[Y_{i}(1)-Y_{i}(0) \mid W_{i}=1\right]&=\mathbb{E}\left[\frac{Y_{i} \cdot W_{i}}{\mathbb{P}\left[W_{i}=1\right]}-\frac{Y_{i} \cdot\left(1-W_{i}\right) \cdot e(X_i)}{\mathbb{P}\left[W_{i}=1\right]\left(1-e(X_i)\right)}\right]
+\end{align}
+
+
+and the estimator will be the sample counterpart, considering the estimated propensity score, $\hat e(X_i)$. It is useful to write this estimator as a weighted regression estimator. Take the model for $\tau^{ATE}$, for example. The regression specification and the weights are, respectively:
+
+$$
+\begin{align}
+Y_i&=\alpha+\tau\cdot W_i+\varepsilon_i, \\
+\omega_i &= \frac{W_i}{\hat e(X_i)}+\frac{1-W_i}{1-\hat e(X_i)}
+\end{align}
+$$
+and it is easy to see that $\mathbb{E}[\hat\tau] = \tau^{ATE}$. This estimator can be modified easily to incorporate covariates. One can estimate a regression function that includes additional covariates the researcher believe help explain the outcome and use the same weights as before.
+
+$$
+\begin{align}
+Y_i&=\alpha+\tau\cdot W_i+X_i\beta+\varepsilon_i \\
+\end{align}
+$$
+
+This weighted regression estimator will be consistent for the true ATE as long as **either** the specification of the propensity score or the regression function is correct, yielding the property known as _double-robustness_.
+
+```{r dr}
+# Creating the weights
+dt[, weight := union/ps + (1 - union)/(1 - ps)]
+reg3 <- feols(earnings~union+age+age_2+education+female, 
+              data = dt, weights = ~weight)
+```
