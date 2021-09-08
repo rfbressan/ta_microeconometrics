@@ -37,7 +37,7 @@ A general bootstrap algorithm is:
 
 1. Given data $\mathbf{w_1},\ldots, \mathbf{w_N}$, draw a bootstrap sample of size $N$ and denote this as $\mathbf{w^∗_1},\ldots, \mathbf{w^∗_N}$
 
-2. Calculate an appropriate statistic using the bootstrap sample. For example the studentized statistic: $t(\hat\theta^*-\hat\theta)/s_{\hat\theta^*}$
+2. Calculate an appropriate statistic using the bootstrap sample. For example the studentized statistic: $t^*=(\hat\theta^*-\hat\theta)/s_{\hat\theta^*}$
 
 3. Repeat steps 1 and 2 $B$ independent times, obtaining $B$ bootstrap replications of the statistic.
 
@@ -81,7 +81,7 @@ boot_func <- function(dt, formula, coef, b = 0, R = 399){
   reps_dt <- data.table(replication = seq_len(R))
   reps_dt[, bootstrap := lapply(replication, function(x){
     # Resampling
-    idx <- sample(.N, .N, replace = TRUE)
+    idx <- sample(dt[, .N], dt[, .N], replace = TRUE)
     mb <- feols(as.formula(formula), data = dt[idx])
     beta <- coefficients(mb)[coef]
     se <- se(mb)[coef]
@@ -102,7 +102,7 @@ boot_func <- function(dt, formula, coef, b = 0, R = 399){
   return(reps_dt)
 }
 
-boot_dt <- boot_func(dt, "logico~mulher+idade", "mulher", R = 399)
+boot_dt <- boot_func(dt, "logico~mulher+idade", "mulher", R = 199)
 head(boot_dt)
 ```
 

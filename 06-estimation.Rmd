@@ -21,6 +21,7 @@ library(data.table)
 library(fixest)
 library(kableExtra)
 library(modelsummary)
+library(MatchIt)
 # library(hdm)
 library(ggplot2)
 ```
@@ -43,7 +44,35 @@ dt[, (cat_cols) := lapply(.SD, factor), .SDcols = cat_cols]
 dt <- dt[complete.cases(dt)]
 ```
 
-```{r ps-full}
+# Matching
+
+Given that CIA holds and asserting that there is overlap between both groups (i.e. strong ignorability assumption), the Propensity Score Matching - PSM - estimator for ATT can be written as:
+
+$$
+\begin{equation}
+\tau_{A T T}^{P S M}=E_{e(X) \mid D=1}\{E[Y(1) \mid D=1, e(X)]-E[Y(0) \mid D=0, e(X)]\}
+\end{equation}
+$$
+
+where we draw the controls from a pool of untreated units and we aim to choose a subset such that its performance as a control group is better than the whole sample.
+
+From @Caliendo2008 we have the following figure, depicting the steps for implementing a PSM estimation.
+
+```{r psm-steps, echo=FALSE}
+knitr::include_graphics("Figs/psm_steps.png")
+```
+
+We are now at step 3, and need to choose an adequate matching algorithm. There are several ways to do this, we will outline some of the most used methods.
+
+_Nearest neighbor matching_ (NNM) is a widely used method, and is composed of two steps. First, the algorithm sorts treated units in a specified order. Then, for each unit in the treatement group, the program finds one or more units in the control group with the nearest PS (or linearized PS). Matching with replacement means that after a treated unit is matched to another from the control group, the last is reintroduced to the control group for next-round matching.
+
+It is worth noting the matching can be done based on the _Mahalanobis_ metric distance, which is **not** a method based on the PS. It plays a similar role as PS in assessing the similarities of different units in terms of the joint distribution of their covariates.
+
+We will use the package `MatchIt` to perform PSM estimation[^matchit]. I suggest you thoroughly read the [package's website](https://kosukeimai.github.io/MatchIt/index.html), especially the articles. Let's estimate the ATT matching on the propensity score at the 1:1 ratio.
+
+[^matchit]: A very nice article about the usage of `MatchIt` package and others in `R` is @ATM61857.
+
+```{r ps-full, cache=TRUE}
 #' Basic covariates
 xb <- c("age", "age_2", "female", "race", "marital_status", 
         "veteran", "education", "class_of_worker")
@@ -53,20 +82,85 @@ xt <- c("private_health_insurance", "medicaid")
 fml <- paste0("union~(", paste(c(xb, xt), collapse = "+"), ")^2")
 ps_full <- feglm(as.formula(fml), family = "binomial",
                 data = dt[, c("union", ..xb, ..xt)])
-
+# Include the PS into original data
 dt[, `:=`(
   ps = predict(ps_full)
 )]
+
+# Matching units
+psm_model <- matchit(as.formula(fml), method = "nearest",
+                     data = dt[, c("earnings", "union", ..xb, ..xt)],
+                     distance = dt$ps,
+                     replace = FALSE,
+                     m.order = "smallest",
+                     ratio = 1)
+psm_model
+```
+And we can access the matched data with the following command:
+
+```{r ps-model}
+dta <- match.data(psm_model)
+head(dta[, c(1:2, 13:15)])
 ```
 
-# Matching
+The `match.data` function returns the matched units, with all their original covariates, plus the columns distance, weights and subclass. Distance refers to the propensity score (or Mahalanobis if asked), weights and subclass refer to sample weights to be used in effect estimation and the "class" (i.e. block) that unit has been assigned. With this matched data in hand it is straightforward to estimate the ATT with a linear regression.
+
+```{r psm-att}
+psm_reg <- feols(earnings~union, data = dta, weights = ~weights)
+summary(psm_reg, se = "hetero")
+```
+
+Adjustment for covariates inclusion is easily handled in this approach, you just include them on the linear regression. Also, CRVE may be used when necessary.
+
+**If replacement** is used during the matching, you must use the `get_matches` function to get the matched data and use this in the linear regression. The standard errors should be computed using as clusters the subclass and unity id.
+
+```{r replace, cache=TRUE}
+# Avoiding get_matches bug
+dt_gm <- dt[, c("earnings", "union", ..xb, ..xt)]
+# Matching units
+psm_rep <- matchit(as.formula(fml), method = "nearest",
+                     data = dt_gm,
+                     distance = dt$ps,
+                     replace = TRUE,
+                     m.order = "smallest",
+                     ratio = 3)
+# Get matched data
+dtb <- get_matches(psm_rep)
+head(dtb[, 1:5])
+```
+
+```{r replace2}
+psm_rep_reg <- feols(earnings~union, data = dtb, weights = ~weights)
+summary(psm_rep_reg, cluster = ~ subclass + id)
+```
 
 # Subclassification
 
-## Blocks
+Subclassification on the estimated propensity score is also refered as blocking or stratification. The sample is partitioned into subclasses (also referred to as strata or
+blocks), based on the values of the estimated propensity scores, so that within the subclasses, the estimated propensity scores are approximately constant. 
+
+The causal effects are estimated within each subclass as if assignment was completely at random within each subclass. If our sample is divided in $B$ blocks, then Imbens and Rubin suggest estimating treatment effects within each block, $\tau_{b}$, by fitting a linear model for each block $b=1,2 \ldots B$ :
+
+$$
+y_{i b}=\alpha_{b}+\tau_{b} W_{i b}+\gamma_{b}^{\prime} X_{i b}+\varepsilon_{i b}
+$$
+
+where $y_{i b}$ is the outcome of observation $i$ in block $b ;$ and $X_{i b}$ is an optional subset of covariates included. Blocking typically does not eliminate all biases associated with differences in the covariates, thus, remaining imbalances within each block can be accounted for if covariates are included. Second, these adjustments can improve the precision of estimators for causal effects.
+
+After estimating the treatment effect within each block, we aggreate these as:
+
+$$
+\begin{equation}
+\hat{\tau}=\sum_{b=1}^{B} \omega_{b} \hat{\tau}_{b}
+\end{equation}
+$$
+
+where the weights depend on the estimand of interest. For the ATE, then $\omega_{b}=n_{b} / n$, where $n_{b}$ is the number of observations in block $b$. If we are interested in the average treatment effect on the treated (ATT), then $\omega_{b}=n_{b}^{t} / n^{t}$, where $n_{b}^{t}$ is the number of treated units in block $b$, and $n^{t}$ is the overall number of treated units.
+
+## Creating the blocks
 
 ```{r blocking-fun}
-#' Function that subdivides a given propensity score vector in subblocks
+#' Function that subdivides a given propensity score vector in sub-blocks
 #' treat = vector with treatment assignments
 #' ps = vector with propensity scores
 #' K = how many covariates will we want to test/use in bias correction of 
@@ -153,7 +247,42 @@ dt_block[, bal_tbl := lapply(data, balance_tbl, treat = "union")]
 lapply(dt_block$bal_tbl, balance_kbl)
 ```
 
-# Dobly-Robust
+```{r block-weights}
+dt_block[, `:=`(N = sapply(data, nrow),
+                Nt = sapply(data, function(x) sum(x$union)))]
+dt_block[, `:=`(w = N/sum(N),
+                wt = Nt/sum(Nt))]
+dt_block[, estimates := lapply(data, function(x){
+  reg <- feols(earnings~union, data = x)
+  est <- coeftable(reg, se = "hetero")["union", c("Estimate", "Std. Error")]
+  return(list(est[1], est[2]))
+})]
+# Unpack estimates
+dt_block[, by = block, c("tau", "sigma") := estimates[[1]]]
+bl_res <- dt_block[, .(
+  estimand = c("ATE", "ATT"),
+  Estimate = c(sum(tau*w), sum(tau*wt)),
+  `Std. Error` = c(sqrt(sum(w^2 * sigma^2)), sqrt(sum(wt^2 * sigma^2)))
+  )]
+bl_res
+```
+
+Or, we can use the `MatchIt` package.
+
+```{r block-m}
+mS <- matchit(as.formula(fml), data = dt,
+              method = "subclass", 
+              distance = dt$ps,
+              estimand = "ATT",
+              subclass = 8,
+              discard = "both")
+
+dtc <- match.data(mS)
+sub_reg <- feols(earnings~union, data = dtc, weights = ~weights)
+summary(sub_reg, se = "hetero")
+```
+
+# Doubly-Robust
 
 The basic Horvitz-Thompson (IPW) estimator exploits the following two equalities:
 
@@ -162,8 +291,22 @@ The basic Horvitz-Thompson (IPW) estimator exploits the following two equalities
 \mathbb{E}\left[\frac{Y_{i}\cdot W_{i}  }{e\left(X_{i}\right)}\right]=\mathbb{E}\left[Y_{i}(1)\right] \quad \text { and } \quad \mathbb{E}\left[\frac{Y_{i} \cdot\left(1-W_{i}\right) }{1-e\left(X_{i}\right)}\right]=\mathbb{E}\left[Y_{i}(0)\right]
 \end{equation}
 
-Hence, our estimands are given by:
+For ATE we have the following weighting scheme: 
 
+$$\omega_{i}^{ate}=\frac{1}{e\left(X_{i}\right)^{W_{i}} \cdot\left(1-e\left(X_{i}\right)\right)^{1-W_{i}}}=\left\{\begin{array}{ll}
+1 /\left(1-e\left(X_{i}\right)\right) & \text { if } W_{i}=0 \\
+1 / e\left(X_{i}\right) & \text { if } W_{i}=1
+\end{array}\right.$$
+
+and for ATT the weights are slightly changed, 
+
+$$\omega_{i}^{att}=\frac{1}{P[W_i=1]}\frac{e(X_i)^{1-W_i}}{\left(1-e\left(X_{i}\right)\right)^{1-W_{i}}}=\left\{\begin{array}{ll}
+P[W_i=1]^{-1}\cdot e(X_i) /\left(1-e\left(X_{i}\right)\right) & \text { if } W_{i}=0 \\
+P[W_i=1]^{-1} & \text { if } W_{i}=1
+\end{array}\right.$$
+
+
+Hence, our estimands are given by:
 
 \begin{align}
 \tau^{ATE}=\mathbb{E}\left[Y_{i}(1)-Y_{i}(0)\right]&=\mathbb{E}\left[\frac{Y_{i} \cdot W_{i}}{e(X_i)}-\frac{Y_{i} \cdot\left(1-W_{i}\right)}{1-e(X_i)}\right] \\
@@ -190,8 +333,22 @@ $$
 This weighted regression estimator will be consistent for the true ATE as long as **either** the specification of the propensity score or the regression function is correct, yielding the property known as _double-robustness_.
 
 ```{r dr}
+# Overall probability of treatment
+p_treat <- mean(dt$union)
 # Creating the weights
-dt[, weight := union/ps + (1 - union)/(1 - ps)]
-reg3 <- feols(earnings~union+age+age_2+education+female, 
-              data = dt, weights = ~weight)
+dt[, `:=`(w = union/ps + (1 - union)/(1 - ps),
+          wt = (1/p_treat)*(ps/(1 - ps))^(1 - union))]
+# ATE regression
+reg <- feols(earnings~union+age+age_2+education+female, 
+              data = dt, weights = ~w)
+# ATT regression
+reg2 <- feols(earnings~union+age+age_2+education+female, 
+              data = dt, weights = ~wt)
+etable(list(reg, reg2), se = "hetero", keep = "union")
 ```
+
+# Useful links
+
+[MatchIt website](https://kosukeimai.github.io/MatchIt/)
+
+# References
