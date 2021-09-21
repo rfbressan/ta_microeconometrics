@@ -97,6 +97,7 @@ dt <- dt[complete.cases(dt)]
 ```
 
 ```{r init-bal, results = "asis"}
+# From modelsummary package: pre-formatted balance table
 datasummary_balance(~union, data = dt,
                     title =  "Descriptive statistics by treatment group for an observational study.")
 ```
@@ -135,6 +136,15 @@ norm_diff <- function(xt, xc, sdt, sdc) {
   (xt - xc)/(sqrt((sdt^2 + sdc^2)/2))
 }
 
+#' Tail overlap for treatment and control groups
+#'
+#' @param dt data.table containing your dataset
+#' @param treat_var character, name of treatment variable
+#' @param variables character, column name containing all variables
+#' @param values character, column name containing values for variables 
+#' @param alpha float, significance level
+#'
+#' @return data.table with three columns, one for variable and two for the coverages of treatment and control
 coverage <- function(dt, treat_var, variables, values, alpha = 0.05) {
   stopifnot(is.data.table(dt))
 
@@ -161,20 +171,29 @@ coverage <- function(dt, treat_var, variables, values, alpha = 0.05) {
   setnames(pi_dt, c("get.1", "0", "1"), c(variables, "pi_cont", "pi_treat"))
   return(pi_dt)
 }
-# Select the numerical columns and compute the normalized difference and log
-# ratio
+#' Select the numerical columns and compute the normalized difference
+#' and log ratio
 num_cols <- colnames(dt)[sapply(dt, is.numeric)]
 
 dt_long <- melt(dt[, ..num_cols], id.vars = "union",
                 variable.factor = FALSE)
+head(dt_long)
+```
 
+```{r norm-diff2, cache=TRUE}
 dt_summa <- dt_long[, by = .(variable, union),
                    .(N = .N,
                      mean = mean(value, na.rm = TRUE),
                      sd = sd(value, na.rm = TRUE)
                      )]
+
 dt_wide <- dcast(dt_summa, variable~union, 
                  value.var = c("mean", "sd", "N"))
+head(dt_wide)
+```
+
+```{r norm-diff3, cache=TRUE}
+# Creates new columns
 dt_wide[,  `:=`(
   diff_mean = mean_1 - mean_0,
   std_err = sqrt(sd_1^2/N_1 + sd_0^2/N_0),
@@ -182,7 +201,7 @@ dt_wide[,  `:=`(
   norm_diff = norm_diff(mean_1, mean_0, sd_1, sd_0),
   log_ratio = log(sd_1) - log(sd_0)
 ) ]
-
+#' New data.table for coverages
 pi_dt <- coverage(dt_long, treat_var = "union", 
                   variables = "variable", 
                   values = "value")
@@ -192,6 +211,7 @@ bal_dt <- dt_wide[pi_dt, on = "variable"]
 vari <- which(colnames(dt_wide) == "variable")
 treat <- grep("_1", colnames(dt_wide))
 cont <- grep("_0", colnames(dt_wide))
+#' Rearrange columns
 setcolorder(bal_dt, c(vari, treat, cont))
 ```
 
@@ -199,13 +219,16 @@ And now we can present the normalized difference alongside to other metrics in t
 
 
 ```{r norm-tbl, results = "asis"}
+#' Show the data.table as a pretty table using kableExtra package
 Nt <- bal_dt[1, N_1]
 Nc <- bal_dt[1, N_0]
+# Insert the number of observations in column name
 t_title <- sprintf("Treatment ($N_t = %s$)", Nt)
 c_title <- sprintf("Control ($N_c = %s$)", Nc)
 kbl_head <- c(1, 2, 2, 5)
 names(kbl_head) <- c(" ", t_title, c_title, "Overlap Measures")
-
+#' Generates the table. You can use the format = 'latex' if compiling a 
+#' PDF. Note: The native pipe operator |> works only for R 4.1 or newer
 kbl(bal_dt[, -c("N_1", "N_0", "diff_mean", "std_err")], 
     digits = 2,
     col.names = c("Variable", "Mean", "Std.Dev",
@@ -416,12 +439,13 @@ full_proc_time <- round(Sys.time() - full_tic, 2)
 ## Assessing PS Overlap
 
 ```{r ds, cache=TRUE}
+#' Add columns with PS from each model
 dt[, `:=`(
   ir_ps = predict(ps_ir),
   lasso_ps = predict(ps_lasso),
   full_ps = predict(ps_full)
 )]
-
+#' Make a long format dt
 dt_models <- melt(dt, 
                        measure.vars = c("ir_ps", "lasso_ps", "full_ps"),
                        variable.name = "model",
@@ -440,6 +464,7 @@ ol_tbl
 ```
 
 ```{r ds-plot, cache=TRUE}
+#' Label each facet including runtime
 model_labels <- c(ir_ps = sprintf("Imbens-Rubin %s %s.",
                                   ir_proc_time, 
                                   attr(ir_proc_time, "units")), 
@@ -449,6 +474,7 @@ model_labels <- c(ir_ps = sprintf("Imbens-Rubin %s %s.",
                   full_ps = sprintf("Full %s %s.", 
                                     full_proc_time,
                                     attr(full_proc_time, "units")))
+#' Plot the PS by model and treatment group
 ggplot(dt_models, aes(ps)) +
   geom_histogram(aes(y = stat(density)), color = "White", bins = 50) +
   facet_grid(union~model, 
@@ -536,7 +562,7 @@ Hence, we already have a trimmed dataset containing the pseudo-outcome, treatmen
 $$X_{p,i}=\alpha_i+\beta W_i+\gamma\prime X_{r,i}+\varepsilon_i$$
 
 ```{r pseudo-reg}
-# Creates the weights
+# Creates the weights. Next TA class we will discuss this in more detail
 dt_trim[, weight := union/ps + (1 - union)/(1 - ps)]
 reg1 <- feols(wage_income_last_year~union, data = dt_trim)
 reg2 <- feols(wage_income_last_year~union, data = dt_trim, weights = ~weight)

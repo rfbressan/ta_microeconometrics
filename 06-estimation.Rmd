@@ -1,5 +1,5 @@
 ---
-title: "Estimations"
+title: "Estimators"
 subtitle: "Matching, Subclassification and Doubly-Robust" 
 author: "Rafael Felipe Bressan"
 date: "`r Sys.Date()`"
@@ -22,7 +22,6 @@ library(fixest)
 library(kableExtra)
 library(modelsummary)
 library(MatchIt)
-# library(hdm)
 library(ggplot2)
 ```
 
@@ -72,7 +71,7 @@ We will use the package `MatchIt` to perform PSM estimation[^matchit]. I suggest
 
 [^matchit]: A very nice article about the usage of `MatchIt` package and others in `R` is @ATM61857.
 
-```{r ps-full, cache=TRUE}
+```{r ps-full}
 #' Basic covariates
 xb <- c("age", "age_2", "female", "race", "marital_status", 
         "veteran", "education", "class_of_worker")
@@ -107,14 +106,14 @@ The `match.data` function returns the matched units, with all their original cov
 
 ```{r psm-att}
 psm_reg <- feols(earnings~union, data = dta, weights = ~weights)
-summary(psm_reg, se = "hetero")
+etable(psm_reg, se = "hetero", keep = "union")
 ```
 
 Adjustment for covariates inclusion is easily handled in this approach, you just include them on the linear regression. Also, CRVE may be used when necessary.
 
 **If replacement** is used during the matching, you must use the `get_matches` function to get the matched data and use this in the linear regression. The standard errors should be computed using as clusters the subclass and unity id.
 
-```{r replace, cache=TRUE}
+```{r replace}
 # Avoiding get_matches bug
 dt_gm <- dt[, c("earnings", "union", ..xb, ..xt)]
 # Matching units
@@ -131,7 +130,7 @@ head(dtb[, 1:5])
 
 ```{r replace2}
 psm_rep_reg <- feols(earnings~union, data = dtb, weights = ~weights)
-summary(psm_rep_reg, cluster = ~ subclass + id)
+etable(psm_rep_reg, cluster = ~ subclass + id, keep = "union")
 ```
 
 # Subclassification
@@ -158,6 +157,18 @@ $$
 where the weights depend on the estimand of interest. For the ATE, then $\omega_{b}=n_{b} / n$, where $n_{b}$ is the number of observations in block $b$. If we are interested in the average treatment effect on the treated (ATT), then $\omega_{b}=n_{b}^{t} / n^{t}$, where $n_{b}^{t}$ is the number of treated units in block $b$, and $n^{t}$ is the overall number of treated units.
 
 ## Creating the blocks
+
+@Imbens2015 propose an algorithm to split the range of PS into $J$ blocks in order to estimate the causal effect through the subclassification method. We create intervals of the type $[b_{j−1} ,b_j)$ such that we analyze units with propensity scores
+within an interval _as if_ they have identical propensity scores.
+
+We start with a single block: $J = 1$, with boundaries equal to
+$b_0 = 0$ and $b_j = b_1 = 1$ (if no trimming is selected). Then we have two steps. First we assess the adequacy of the current number of blocks by computing a t-statistic for the null hypothesis that the average value of the estimated **linearized propensity** score is the same for treated and control units.
+
+$$
+t_{\ell}(j)=\frac{\bar{\ell}_{t}(j)-\bar{\ell}_{c}(j)}{\sqrt{s_{\ell}^{2}(j) \cdot\left(1 / N_{\mathrm{c}}(j)+1 / N_{\mathrm{t}}(j)\right)}}
+$$
+
+Second, we check whether the number of controls and treated, $N_c(j)$ and $N_t(j)$, and the total number of units, $N(j)$, in each new block, would be greater than some minimum. If a block is not adequately balanced, and if splitting that block would lead to two new ones each with a sufficient number of units, then, we split at the median value and the new blocks are assessed for adequacy.
 
 ```{r blocking-fun}
 #' Function that subdivides a given propensity score vector in sub-blocks
@@ -234,7 +245,7 @@ ps_blocks <- function(treat, ps, K, t.max = 1.96,  trim = FALSE)
 }
 ```
 
-```{r blocking, results = 'asis', warning=FALSE, cache=TRUE}
+```{r blocking, results = 'asis', warning=FALSE}
 dt[, block := ps_blocks(union, ps, length(c(xb, xt)), 
                         t.max = 2.66,
                         trim = TRUE)]
@@ -279,7 +290,7 @@ mS <- matchit(as.formula(fml), data = dt,
 
 dtc <- match.data(mS)
 sub_reg <- feols(earnings~union, data = dtc, weights = ~weights)
-summary(sub_reg, se = "hetero")
+etable(sub_reg, se = "hetero", keep = "union")
 ```
 
 # Doubly-Robust

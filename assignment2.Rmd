@@ -10,22 +10,26 @@ bibliography: "references.bib"
 knitr::opts_chunk$set(echo = FALSE)
 ```
 
-You were given a sample from PNAD with XXX observations from the fourth quarter of 2020. Your end goal will be to estimate the causal effect of the emergency aid, among those eligible, in the scholar frequency of household's children.
+You were given a sample from PNAD Covid with 60,843 observations from August, 2020 and a dictionary spreadsheet explaning the included variables. Your end goal will be to estimate the causal effect of the emergency aid in scholar outcomes. Choose as outcomes _at least_ the school enrollment and last week days dedicated to school activities.
 
 1.  Begin by cleaning and pre-processing your data. Drop rows and columns you deem needed, re-encode variables, impute (or drop) NA values, etc.
 
-2.  The Design Stage. Focus solely on the treatment indicator and covariates, do not use the outcome variable.
+2. State a causal estimand of interest and the **assumptions** required for the identification of this effect on a selection-on-observables framework. Explain why you need to impose those assumptions.
 
-  > 2.1 Show the initial covariate's balance. At least one of these overlap measures should be provided: normalized difference, log-ratio of standard deviations or coverage. Are these covariates balanced between groups?
+3.  The Design Stage. Focus solely on the treatment indicator and covariates, do not use the outcome variable.
+
+  > 3.1 Show the initial covariate's balance. At least one of these overlap measures should be provided: normalized difference, log-ratio of standard deviations or coverage. Are these covariates balanced between groups?
   
-  > 2.2 Choose a subset of covariates to be part of your propensity score model. Justify the economic relevance of covariates included. Estimate a propensity score model and assess the overlap assumption. Comment on your results and how could you improve overlap? Also, specify a **linear regression** using those same covariates and estimate the causal effect, save the result for future comparisons.
+  > 3.2 Choose a subset of covariates to be part of your propensity score model. Justify the economic relevance of covariates included. Estimate a propensity score model and assess the overlap assumption. Comment on your results and how could you improve overlap? Also, specify a **linear regression** using those same covariates and estimate the causal effect, save the result for future comparisons.
   
-  > 2.3 Based on the propensity score, split your sample into blocks, following the Imbens and Rubin's methodology you have seen in class. Reassess your chosen covariates' balance **within** each block. You can trim your sample to improve overlap.
+  > 3.3 Based on the propensity score, split your sample into blocks, following the Imbens and Rubin's methodology you have seen in class. Reassess your chosen covariates' balance **within** each block. You can trim your sample to improve overlap.
 
-3. Assess the Unconfoundedness assumption by choosing a placebo outcome and performing the causal effect estimation on this placebo. Choose one of the estimation methods: Sub-classification, Matching on the PS, Matching on $X$ (Mahalanobis distance). If using matching, all control units are to be matched against a treated unit. (with different weights). Why is this a good placebo?    
+4. Assess the Unconfoundedness assumption by choosing a placebo outcome and performing the causal effect estimation on this placebo. Choose one of the estimation methods: Subclassification, Matching on the PS, Matching on $X$ (Mahalanobis distance). If using matching, all control units are to be matched against a treated unit[^full]. (with different weights). Why is this a good placebo?    
 
-4. With the trimmed sample, estimate the causal effect using **all** five methods: _Sub-classification, Matching on the PS, Matching on $X$, linear regression, and Doubly-Robust_. Compare the results you have and the linear regression from item 2.2 (without trimming). Do you think you have a good causal model? Why? If not, explain what else would you do to recover the causal estimand.
+[^full]: You may want to check this vignette, [MatchIt: Getting Started](http://www.maths.bristol.ac.uk/R/web/packages/MatchIt/vignettes/MatchIt.html)
 
-5. **Bonus.** Estimate the causal effect through one of those *Machine Learning* methods: Generalized Random Forests [@Athey2019b] or Double Machine Learning [@Chernozhukov2018a]
+5. With the trimmed sample, estimate the causal effect using **all** five methods: _Subclassification, Matching on the PS, Matching on $X$, linear regression, and Doubly-Robust_. Compare the results you have and the linear regression from item 2.2 (without trimming). Do you think you have a good causal model? Why? If not, explain what else would you do to recover the causal estimand.
+
+6. **Bonus.** Estimate the causal effect through one of those *Machine Learning* methods: Generalized Random Forests [@Athey2019b] or Double Machine Learning [@Chernozhukov2018a]
 
 ## References
