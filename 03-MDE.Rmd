@@ -87,7 +87,7 @@ We have to _simulate_ the treatment assignment designed to happen in the experim
 #' group
 set.seed(123456)
 eff_grid <- seq(0, 0.5, by = 0.05) # Effect grid
-reps <- 100
+reps <- 1000
 alpha <- 0.05
 dt2 <- copy(dt)
 #' Creates a data.table to hold all replications and effects
@@ -180,7 +180,7 @@ Suppose now we want to compute the MDE for a **specified power** and significanc
 set.seed(123456)
 kappa <- 0.8
 alpha <- 0.05
-reps <- 50 # High values may take longer
+reps <- 100 # High values may take longer
 
 power_diff <- function(beta, kappa = 0.8, alpha = 0.05, reps = 10){
   dt2 <- copy(dt) # Copying from global environment

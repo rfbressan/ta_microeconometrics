@@ -26,9 +26,8 @@ vignettes/*.pdf
 *.knit.md
 # R Environment Variables
 .Renviron
-*.html
 ta_microeconometrics.Rproj
 *_files
-dt_utils.R
+# dt_utils.R
 R-intro.pdf
 *.pdf

@@ -11,8 +11,20 @@ output:
 bibliography: "references.bib"
 ---
 
+<script type="text/x-mathjax-config">
+MathJax.Hub.Config({
+  TeX: { 
+      equationNumbers: { 
+            autoNumber: "all",
+            formatNumber: function (n) {return n}
+      } 
+  }
+});
+</script>
+
+
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ```{r inst, message=FALSE}
@@ -26,89 +38,91 @@ library(ggplot2)
 
 # Manski Bounds 
 
-_(a) State the MTR and MTS assumptions - **in the most plausible direction** - in this context. Does economic theory have any predictions on the validity of these assumptions?_
+Many times it is hard for a researcher to motivate a specific functional form (i.e. linear with constant slope) of treatment response. Sometimes all we have is the shape of response functions, like monotonicity. The assumption of **monotone treatment response** (MTR) reads as, @Manski2000:
 
-Both MTR and MTS definitions are made in @Manski2000 , they respectively are:
-
-_MTR: Let $T$ be an ordered set. For each $j \in J$,_
-
-$w_2\geq w_1\implies y_j(w_2)\geq y_j(w_1).$
-
-_MTS: Let $T$ be an ordered set. For each $w \in W$,_
-
-$u_2\geq u_1\implies E[y(w)|z=u_2]\geq E[y(w)|z=u_1].$
-
-where $W$ denotes the treatment status, $y_j$ is the potential outcome for person $j \in J$.
-
-In this context, the MTR assumption is most plausible when the number of children in the family **reduces** years of education of the first born child. That is:
-
+_MTR: For all units $j \in J$ and all treatment pairs $(w_2, w_1)$,_
 
 \begin{equation}
-  \text{MTR: }w_2\geq w_1\implies y_j(w_2)\leq y_j(w_1)
+w_2\geq w_1\implies Y_j(w_2)\geq Y_j(w_1). 
 \end{equation}
 
-considering that $w_i$ is the number of children in the family and the outcome $y_j$ is years of education of the first born.
+The MTR assumption permits each unit to have a different response, although, it requires monotonicity of all responses. This assumption may be combined with the **monotone treatment selection** (MTS) to provide sharp bounds on treatment effect. 
 
-In a similar way, the MTS assumption in this context will state that potential outcomes for first born children in bigger families are **lower** than the ones in smaller families.
+_MTS: For each $w \in W$,_
 
+$$
+\begin{equation}
+u_2\geq u_1\implies E[Y_j(w)|z=u_2]\geq E[Y_j(w)|z=u_1].
+\end{equation}
+$$
+
+where $w$ denotes the potential treatment status, $Y_j$ is the potential outcome for person $j \in J$, the **realized treatment** status is denoted by $z\in W$. 
+
+Consider the variation of wages with schooling example. The MTS assumption asserts that persons who select higher levels of schooling have weakly higher _mean_ wage functions than do those who select lower levels of schooling. The MTR interpretation is that each person's wage function is weakly increasing in conjectured years of schooling. Those interpretations are not mutually exclusive.
+
+## Upper bound
+
+First we will derive results for **binary** treatment, following the MTR and MTS assumptions from equations (1) and (2) to get an intuition on how those bounds can be derived. When we impose the MTR assumption in (1), we get a zero **lower bound** on ATE, while the MTS assumption yields an **upper bound** that is equal to the naive difference of means between the two groups. Putting the two assumptions together we have that:
 
 \begin{equation}
-  \text{MTS: }w_2\geq w_1\implies E[y(w)|W=w_2]\leq E[y(w)|W=w_1]
+  0\leq\text{ATE}\leq E[Y_j|z=w_2]-E[Y_j|z=w_1]
 \end{equation}
-
-First we will derive some results **for binary** treatment, following the MTR and MTS specifications from equations \@ref(eq:mtr) and \@ref(eq:mts) to get an intuition of what changes from the usual MTR and MTS assumptions. When we impose the MTR assumption in \@ref(eq:mtr), we get a zero **upper bound** on ATE, while the MTS assumption yields a **lower bound** that is equal to the naive difference of means between the two groups. We see that upper and lower bound were interchanged in this new specification. Putting the two assumptions together we have that:
-
-
-\begin{equation}
-  E[y_j|W=\bar w_{n}]-E[y_j|W=w_{n}]\leq\text{ATE}\leq 0
-\end{equation}
-
-where the treatment $\bar w_{n}$ refers to a family with **more** than $n$ children, and $w_{n}$ is a family with $n$ children or less, such that $P(W=\bar w_n)=\pi$ and $P(W=w_n)=1-\pi$.
 
 We begin with the proof that MTR assumption implies the zero upper bound.
 
-**Proposition**: Given the MTR assumption on \@ref(eq:mtr) the upper bound -- UB -- on the average treatment effect -- ATE -- is zero.
+**Proposition**: Given the MTR assumption on (1) the lower bound -- LB -- on the average treatment effect -- ATE -- is zero.
 
 
-**Proof**: Suppose the treatment is binary with two levels, $w_2\geq w_1$. The probability of being assigned to $w_2$ is $\pi$. Then the MTR assumption in \@ref(eq:mtr) implies that $y_j(w_2)\leq y_j(w_1)$, and we have the following two inequalities,
+**Proof**: Suppose the treatment is binary with two levels, $w_2\geq w_1$. The probability of being assigned to $w_2$ is $\pi$. Then the MTR assumption implies that $Y_j(w_2)\geq Y_j(w_1)$, and we have the following two inequalities,
 
-$E[y_j(w_2)|w_1]\leq E[y_j|w_1]$ and $E[y_j|w_2]\leq E[y_j(w_1)|w_2]$
+$E[Y_j(w_2)|z=w_1]\geq E[Y_j|z=w_1]$ and $E[Y_j|z=w_2]\geq E[Y_j(w_1)|z=w_2]$
 
 The ATE has the following observational-counterfactual decomposition,
 
-$E[y_j(w_2)-y_j(w1)]=\pi E[y_j|w_2]-(1-\pi)E[y_j|w_1]-\pi E[y_j(w_1)|w_2]+(1-\pi)E[y_j(w_2)|w_1]$
+$E[Y_j(w_2)-Y_j(w1)]=\pi E[Y_j|w_2]-(1-\pi)E[Y_j|w_1]-\pi E[Y_j(w_1)|w_2]+(1-\pi)E[Y_j(w_2)|w_1]$
   
 Making use of the inequalities in the observational-counterfactual decomposition to obtain an upper bound for the ATE we have that:
   
-  \begin{align*}
-    \text{ATE}=E[y_j(w_2)-y_j(w1)]&\leq\pi E[y_j|w_2]-(1-\pi)E[y_j|w_1]-\pi E[y_j|w_2]+(1-\pi)E[y_j|w_1]\\
-    &=0
-  \end{align*}
+\begin{align*}
+    \text{ATE}=E[Y_j(w_2)-Y_j(w1)]&\geq\pi E[Y_j|w_2]-(1-\pi)E[Y_j|w_1]-\pi E[Y_j|w_2]+(1-\pi)E[Y_j|w_1]\\
+    &\geq 0
+\end{align*}
+
+$$\tag*{$\blacksquare$}$$
 
 
-Now we prove that the MTS assumption implies a lower bound on the ATE equal to $E[y_j|w_2]-E[y_j|w_1]$.
+Now we prove that the MTS assumption implies an upper bound on the ATE equal to $E[Y_j|w_2]-E[Y_j|w_1]$.
 
 
-**Proposition**: Given the MTS assumption on \@ref(eq:mts) the lower bound -- LB -- on the average treatment effect is equal to the difference of means between the treatment groups, $\text{ATE}\geq E[y_j|w_2]-E[y_j|w_1]$.
+**Proposition**: Given the MTS assumption, the upper bound -- UB -- on the average treatment effect is equal to the difference in means between the treatment groups, $\text{ATE}\leq E[Y_j|w_2]-E[Y_j|w_1]$.
 
 
-**Proof**: Suppose once again the treatment is binary with two levels, $w_2\geq w_1$. The probability of being assigned to $w_2$ is $\pi$. Then the MTS assumption in \@ref(eq:mts) implies that potential outcomes for treatment group at $W=w_2$ are lower than in group with $W=w_1$, and we have the two inequalities,
+**Proof**: Suppose once again the treatment is binary with two levels, $w_2\geq w_1$. The probability of being assigned to $w_2$ is $\pi$. Then the MTS assumption in (2) implies that potential outcomes for treatment group at $z=w_2$ are higher than in group with $z=w_1$, and we have the two inequalities,
 
-$E[y_j(w_1)|w_2]\leq E[y_j|w_1]$ and $E[y_j|w_2]\leq E[y_j(w_2)|w_1]$
+$E[Y_j(w_1)|w_2]\geq E[Y_j|w_1]$ and $E[Y_j|w_2]\geq E[Y_j(w_2)|w_1]$
   
 by the observational-counterfactual decomposition the ATE has a lower bound given by:
   
-  \begin{align*}
-    \text{ATE}=E[y_j(w_2)-y_j(w1)]&\geq\pi E[y_j|w_2]-(1-\pi)E[y_j|w_1]-\pi E[y_j|w_1]+(1-\pi)E[y_j|w_2]\\
-    &=E[y_j|w_2]-E[y_j|w_1]
-  \end{align*}
+\begin{align*}
+    \text{ATE}=E[Y_j(w_2)-Y_j(w1)]&=\pi E[Y_j|w_2]-(1-\pi)E[Y_j|w_1]+(1-\pi) E[Y_j(w_2)|w_1] -\pi E[Y_j(w_1)|w_2]\\
+    &\leq E[Y_j|w_2]-E[Y_j|w_1]
+\end{align*}
 
+$$\tag*{$\blacksquare$}$$
 
-Therefore, for a multi-level treatment we can expect the same phenomenon to occur, the upper and lower bound computations will be flipped. This in turns defines that our **upper bound** on ATE will be zero, while the lower bound can be computed by eq. 9.19 from @Manski2009.
+Therefore, for a multi-level treatment we can expect similar bounds to occur, the lower bound will be zero, but the upper bound must take into account all combinations of treatment levels. Therefore, the upper bound can be computed by eq. 9.19 from @Manski2009.
 
-\begin{equation}
-\Delta(s,t)\leq \sum_{t^\prime>t}E(y|w=t^\prime)P(w=t^\prime)+E(y|w=t)P(w\leq t)-\sum_{s^\prime < s}E(y|w=s^\prime)P(w=s^\prime)-E(y|w=s)P(w\geq s)
-(\#eq:lower-bound)
-\end{equation}
+\begin{align}
+\Delta(s, t)\leq &\sum_{t^\prime>t}E(y|z=t^\prime)P(z=t^\prime)+E(y|z=t)P(z\leq t)\nonumber\\
+&-\sum_{s^\prime < s}E(y|z=s^\prime)P(z=s^\prime)-E(y|z=s)P(z\geq s)
+\end{align}
+
+for $s, t \in W$ and $t>s$.
+
+An important fact is that the **combined assumption is refutable**. When both assumptions hold, the observable (sample counterpart) value $E[Y_j|z=t]$ is weakly increasing in $t$. 
+
+# Causal Machine Learning
+
+Link to the presentation: [Causal Forests](https://rfbressan.github.io/eesp_machine_learning/CausalForest.html#1)
 
 # References
